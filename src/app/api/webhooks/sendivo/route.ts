@@ -1,15 +1,21 @@
 import { NextResponse, type NextRequest } from "next/server";
+import { eq } from "drizzle-orm";
 import { getDb } from "@/db";
+import { agentActions, messages } from "@/db/schema";
 import { env } from "@/env";
-import { ingestInboundMessage } from "@/lib/sendivo/ingest";
-import { sendivoInboundMessage } from "@/lib/sendivo/webhook-schema";
+import { getContactByPhone } from "@/lib/sendivo/client";
+import { ingestInboundMessage, mapSendivoContact } from "@/lib/sendivo/ingest";
+import { classifyWebhook } from "@/lib/sendivo/webhook-schema";
 
 /**
- * Sendivo inbound webhook. Secret-tokened (header `x-webhook-token` or
- * `?token=`), Zod-validated, deduped on sendivo_message_id.
+ * Sendivo webhook receiver. Sendivo's webhook config is just a URL (no signing
+ * mechanism in their docs), so the shared secret rides in the URL:
+ * https://<host>/api/webhooks/sendivo?token=<SENDIVO_WEBHOOK_TOKEN>
+ * (an x-webhook-token header also works, for manual testing).
  *
- * Always 200 on validation failures we can't act on — returning 4xx makes
- * transports retry forever. 401 only on a bad token.
+ * Always 200 on payloads we can't act on — 4xx makes transports retry forever.
+ * 401 only on a bad token. Unrecognized shapes are captured into agent_actions
+ * so the real payload shape is learned from the first live event.
  */
 export async function POST(req: NextRequest) {
   const expected = env().SENDIVO_WEBHOOK_TOKEN;
@@ -29,12 +35,38 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: false, reason: "invalid json" }, { status: 200 });
   }
 
-  const parsed = sendivoInboundMessage.safeParse(body);
-  if (!parsed.success) {
-    console.warn("[sendivo-webhook] unrecognized payload", parsed.error.flatten());
-    return NextResponse.json({ ok: false, reason: "unrecognized payload" }, { status: 200 });
-  }
+  const db = getDb();
+  const classified = classifyWebhook(body);
 
-  const result = await ingestInboundMessage(getDb(), parsed.data);
-  return NextResponse.json({ ok: true, ...result }, { status: 200 });
+  switch (classified.kind) {
+    case "inbound": {
+      const result = await ingestInboundMessage(db, classified, {
+        enrich: async (phone) => {
+          try {
+            const contact = await getContactByPhone(phone);
+            return contact ? mapSendivoContact(contact) : null;
+          } catch (error) {
+            console.warn("[sendivo-webhook] enrichment failed", error);
+            return null;
+          }
+        },
+      });
+      return NextResponse.json({ ok: true, ...result }, { status: 200 });
+    }
+
+    case "delivery_status": {
+      const updated = await db
+        .update(messages)
+        .set({ status: classified.status, updatedAt: new Date() })
+        .where(eq(messages.sendivoMessageId, classified.sendivoMessageId))
+        .returning({ id: messages.id });
+      return NextResponse.json({ ok: true, outcome: "status_updated", matched: updated.length }, { status: 200 });
+    }
+
+    case "unknown": {
+      await db.insert(agentActions).values({ type: "sendivo_webhook_unrecognized", input: body });
+      console.warn("[sendivo-webhook] unrecognized payload captured to agent_actions");
+      return NextResponse.json({ ok: false, reason: "unrecognized payload (captured)" }, { status: 200 });
+    }
+  }
 }

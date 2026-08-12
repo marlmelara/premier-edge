@@ -60,6 +60,9 @@ export const contacts = pgTable("contacts", {
   labels: text("labels").array(),
   notes: text("notes"),
   optedOut: boolean("opted_out").notNull().default(false),
+  // Full Sendivo contact payload from first-inbound enrichment (§2.4) —
+  // audit trail, and property_address fields seed M1 parcel resolution.
+  sendivoRaw: jsonb("sendivo_raw"),
   ...timestamps,
 });
 

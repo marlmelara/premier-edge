@@ -1,61 +1,146 @@
-import { desc, eq } from "drizzle-orm";
+import { desc, eq, sql } from "drizzle-orm";
 import type { Db } from "@/db";
 import { contacts, conversations, deals, messages, optOuts } from "@/db/schema";
-import { isOptOutMessage, normalizePhone, type SendivoInboundMessage } from "./webhook-schema";
+import type { SendivoContact } from "./client";
+import { isOptOutMessage, normalizePhone, type ClassifiedWebhook } from "./webhook-schema";
+
+export type InboundMessage = Extract<ClassifiedWebhook, { kind: "inbound" }>;
+
+export type ContactEnrichment = {
+  sendivoContactId: string;
+  name?: string;
+  email?: string;
+  altPhones?: string[];
+  mailingStreet?: string;
+  mailingCity?: string;
+  mailingState?: string;
+  mailingZip?: string;
+  labels?: string[];
+  notes?: string;
+  optedOut?: boolean;
+  raw: unknown;
+};
+
+/** Map a Sendivo contact to our enrichment fields (merge policy: ours wins after first pull). */
+export function mapSendivoContact(c: SendivoContact): ContactEnrichment {
+  const name = c.full_name ?? [c.first_name, c.last_name].filter(Boolean).join(" ") ?? undefined;
+  return {
+    sendivoContactId: String(c.id),
+    name: name || undefined,
+    email: c.email ?? undefined,
+    altPhones: c.alternative_mobile_numbers ?? undefined,
+    mailingStreet: [c.address_line1, c.address_line2].filter(Boolean).join(", ") || undefined,
+    mailingCity: c.city ?? undefined,
+    mailingState: c.state ?? undefined,
+    mailingZip: c.postal_code ?? undefined,
+    labels: c.labels?.map((l) => l.name),
+    notes: c.notes ?? undefined,
+    optedOut: c.opted_out ?? undefined,
+    raw: c,
+  };
+}
+
+export type IngestOptions = {
+  /** Called for contacts we haven't enriched yet; network errors should be caught by the caller and yield null. */
+  enrich?: (phone: string) => Promise<ContactEnrichment | null>;
+};
 
 export type IngestResult =
   | { outcome: "persisted"; contactId: string; conversationId: string; messageId: string; optedOut: boolean }
   | { outcome: "duplicate" };
 
 /**
- * Persist one inbound Sendivo message: upsert contact by phone, find-or-create
- * the deal + conversation spine, insert the message (deduped on
- * sendivo_message_id), and enforce local opt-out immediately on STOP keywords.
- *
- * Sendivo contact enrichment (GET /contacts on first inbound) is a follow-up —
- * it needs the API key (open item #1).
+ * Persist one inbound Sendivo message: upsert contact by phone (with
+ * first-inbound enrichment, §2.4), find-or-create the deal + conversation
+ * spine, insert the message (deduped on sendivo_message_id), and enforce
+ * local opt-out immediately on STOP keywords.
  */
-export async function ingestInboundMessage(db: Db, payload: SendivoInboundMessage): Promise<IngestResult> {
-  const msg = payload.message;
+export async function ingestInboundMessage(
+  db: Db,
+  msg: InboundMessage,
+  opts?: IngestOptions,
+): Promise<IngestResult> {
   const phone = normalizePhone(msg.from);
 
+  // Dedupe before doing any work: Sendivo retries webhooks.
+  const existingMsg = await db.query.messages.findFirst({
+    where: eq(messages.sendivoMessageId, msg.sendivoMessageId),
+    columns: { id: true },
+  });
+  if (existingMsg) return { outcome: "duplicate" };
+
+  // Enrichment happens outside the transaction (it's a network call) and only
+  // on first inbound — i.e. when the contact is unknown or never enriched.
+  const known = await db.query.contacts.findFirst({
+    where: eq(contacts.phone, phone),
+    columns: { id: true, sendivoContactId: true },
+  });
+  const enrichment = !known?.sendivoContactId && opts?.enrich ? await opts.enrich(phone) : null;
+
   return db.transaction(async (tx) => {
-    // Dedupe first: Sendivo retries webhooks, and we may see the same message id twice.
-    const existing = await tx.query.messages.findFirst({
-      where: eq(messages.sendivoMessageId, msg.id),
-      columns: { id: true },
-    });
-    if (existing) return { outcome: "duplicate" as const };
+    const coalesce = (column: unknown, value: string | undefined) =>
+      value === undefined ? undefined : sql`COALESCE(${column}, ${value})`;
 
     const [contact] = await tx
       .insert(contacts)
-      .values({ phone, source: "inbound", sendivoContactId: msg.contact_id })
+      .values({
+        phone,
+        source: "inbound",
+        sendivoContactId: enrichment?.sendivoContactId ?? msg.contactId,
+        name: enrichment?.name,
+        email: enrichment?.email,
+        altPhones: enrichment?.altPhones,
+        mailingStreet: enrichment?.mailingStreet,
+        mailingCity: enrichment?.mailingCity,
+        mailingState: enrichment?.mailingState,
+        mailingZip: enrichment?.mailingZip,
+        labels: enrichment?.labels,
+        notes: enrichment?.notes,
+        sendivoRaw: enrichment?.raw,
+      })
       .onConflictDoUpdate({
         target: contacts.phone,
-        set: { updatedAt: new Date() },
+        // Merge policy: fill blanks only — after the first pull, ours wins.
+        set: {
+          sendivoContactId: coalesce(contacts.sendivoContactId, enrichment?.sendivoContactId ?? msg.contactId),
+          name: coalesce(contacts.name, enrichment?.name),
+          email: coalesce(contacts.email, enrichment?.email),
+          notes: coalesce(contacts.notes, enrichment?.notes),
+          ...(enrichment?.raw !== undefined
+            ? { sendivoRaw: sql`COALESCE(${contacts.sendivoRaw}, ${JSON.stringify(enrichment.raw)}::jsonb)` }
+            : {}),
+          updatedAt: new Date(),
+        },
       })
       .returning();
 
     // Conversation: match by Sendivo's conversation id when present, else the
     // contact's most recent conversation, else create a fresh deal + conversation.
     let conversation =
-      msg.conversation_id != null
+      msg.conversationId != null
         ? await tx.query.conversations.findFirst({
-            where: eq(conversations.sendivoConversationId, msg.conversation_id),
+            where: eq(conversations.sendivoConversationId, msg.conversationId),
           })
         : undefined;
 
     if (!conversation) {
-      const contactDeals = await tx.query.deals.findMany({
+      const latestDeal = await tx.query.deals.findFirst({
         where: eq(deals.contactId, contact.id),
         columns: { id: true },
         orderBy: desc(deals.createdAt),
       });
-      if (contactDeals.length > 0) {
+      if (latestDeal) {
         conversation = await tx.query.conversations.findFirst({
-          where: eq(conversations.dealId, contactDeals[0].id),
+          where: eq(conversations.dealId, latestDeal.id),
           orderBy: desc(conversations.createdAt),
         });
+        // Backfill the Sendivo conversation id if we only just learned it.
+        if (conversation && !conversation.sendivoConversationId && msg.conversationId) {
+          await tx
+            .update(conversations)
+            .set({ sendivoConversationId: msg.conversationId })
+            .where(eq(conversations.id, conversation.id));
+        }
       }
     }
 
@@ -63,31 +148,32 @@ export async function ingestInboundMessage(db: Db, payload: SendivoInboundMessag
       const [deal] = await tx.insert(deals).values({ contactId: contact.id }).returning();
       [conversation] = await tx
         .insert(conversations)
-        .values({ dealId: deal.id, sendivoConversationId: msg.conversation_id })
+        .values({ dealId: deal.id, sendivoConversationId: msg.conversationId })
         .returning();
     }
 
-    const receivedAt = msg.received_at ? new Date(msg.received_at) : new Date();
     const [message] = await tx
       .insert(messages)
       .values({
         conversationId: conversation.id,
         direction: "inbound",
         body: msg.body,
-        sendivoMessageId: msg.id,
+        sendivoMessageId: msg.sendivoMessageId,
         status: "received",
       })
       .returning();
 
     await tx
       .update(conversations)
-      .set({ lastInboundAt: receivedAt, updatedAt: new Date() })
+      .set({ lastInboundAt: msg.receivedAt ?? new Date(), updatedAt: new Date() })
       .where(eq(conversations.id, conversation.id));
 
     // Local opt-out enforcement — checked before EVERY send, recorded at ingest.
-    const optedOut = isOptOutMessage(msg.body);
+    // Sendivo-side opt-out flags from enrichment are honored too.
+    const optedOut = isOptOutMessage(msg.body) || enrichment?.optedOut === true;
     if (optedOut) {
-      await tx.insert(optOuts).values({ phone, source: "inbound_keyword" }).onConflictDoNothing();
+      const source = isOptOutMessage(msg.body) ? "inbound_keyword" : "sendivo_sync";
+      await tx.insert(optOuts).values({ phone, source }).onConflictDoNothing();
       await tx.update(contacts).set({ optedOut: true, updatedAt: new Date() }).where(eq(contacts.id, contact.id));
       await tx
         .update(conversations)
