@@ -1,0 +1,22 @@
+# Local dev database. Prod is Neon; Redis is Upstash (HTTP) in both — no local
+# Redis container needed until M1 introduces the check cache.
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: premier
+      POSTGRES_PASSWORD: premier
+      POSTGRES_DB: premier_edge
+    ports:
+      - "5432:5432"
+    volumes:
+      - premier_edge_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U premier -d premier_edge"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  premier_edge_pgdata:
