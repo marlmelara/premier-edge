@@ -1,0 +1,27 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  # Dummy values so `next build` can evaluate server modules; nothing connects.
+  DATABASE_URL: postgres://ci:ci@localhost:5432/ci
+  AUTH_SECRET: ci-only-secret
+  AUTH_USERS: '[{"email":"ci@example.com","name":"CI","passwordHash":"x"}]'
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
