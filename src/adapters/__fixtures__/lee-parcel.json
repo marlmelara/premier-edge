@@ -1,0 +1,41 @@
+{
+  "attributes": {
+    "STRAP": "354426L3121060010",
+    "FOLIOID": 10637498,
+    "O_NAME": "CASTILLO AGUSTIN PONCE",
+    "SITEADDR": "3219 15TH ST SW",
+    "SITECITY": "LEHIGH ACRES",
+    "GISACRES": 0.2647,
+    "STATEDAREA_SQFT": 11530,
+    "JUST": 24730,
+    "ASSESSED": 17157,
+    "LEGAL": "LEHIGH ACRES UNIT 12 BLK 106 PB 15 PG 91 LOT 1",
+    "Property_URL": "https://www.leepa.org/Display/Displayparcel.aspx?folioID=10637498"
+  },
+  "geometry": {
+    "rings": [
+      [
+        [
+          -81.6850997780874,
+          26.5992317972716
+        ],
+        [
+          -81.685344599179,
+          26.5992317212947
+        ],
+        [
+          -81.6853457142338,
+          26.5996279347978
+        ],
+        [
+          -81.6851008937297,
+          26.5996285884328
+        ],
+        [
+          -81.6850997780874,
+          26.5992317972716
+        ]
+      ]
+    ]
+  }
+}

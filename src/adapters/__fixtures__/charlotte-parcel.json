@@ -1,0 +1,39 @@
+{
+  "attributes": {
+    "ACCOUNT": "402125204030",
+    "ownersname": "MEHNEY PATRICIA L & CHARLES E JR                                           ",
+    "propertyaddress": "GULFSPRAY CIR                                     ",
+    "FullPropertyAddress": "17200      GULFSPRAY CIR                                     ",
+    "landuse": "Single Family Residential     ",
+    "usecode": "0100",
+    "totlandvalue": "88000     ",
+    "assessedvalue": "400242    ",
+    "shortlegal": "PCH 044 3293 0051"
+  },
+  "geometry": {
+    "rings": [
+      [
+        [
+          -82.16074996053294,
+          26.971235232159536
+        ],
+        [
+          -82.16075048335244,
+          26.97089135947919
+        ],
+        [
+          -82.16099610431068,
+          26.97089165890802
+        ],
+        [
+          -82.1609955823895,
+          26.97123553158745
+        ],
+        [
+          -82.16074996053294,
+          26.971235232159536
+        ]
+      ]
+    ]
+  }
+}

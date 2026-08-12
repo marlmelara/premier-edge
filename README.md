@@ -49,8 +49,8 @@ curl -s -X POST http://localhost:3000/api/webhooks/sendivo \
 
 ## Milestones
 
-- [x] **M0 — Skeleton + Sendivo ingest** (scaffold, auth, CI, Docker, schema, webhook → contacts/conversations/messages persisting) — *pending: real Sendivo key + webhook shape confirmation, Vercel deploy, AI Responder disabled account-wide*
-- [ ] M1 — Eligibility + numbers (county adapters, FEMA, NWI, offer math)
+- [x] **M0 — Skeleton + Sendivo ingest** (scaffold, auth, CI, Docker, schema, webhook → contacts/conversations/messages persisting) — *pending: webhook URL configured in Sendivo + real webhook shape confirmation, Vercel deploy, AI Responder disabled account-wide*
+- [x] **M1 — Eligibility + numbers** (county adapter registry with St. Lucie/Lee/Charlotte live, FEMA NFHL + NWI clients, offer math, `verifyParcel` persisting checks + optional Redis cache) — *pending: Marlon's unit tests on offer math + zone/wetland logic (working agreement §13)*
 - [ ] M2 — CRM core (Deal Room, Property Context Card, Seller 360, Pipeline)
 - [ ] M3 — Agent in copilot (state machine, guardrails, approval queue, urgent alerts)
 - [ ] M4 — Contracts + routing + gating (SignWell, XCHECK, title email)
