@@ -75,6 +75,23 @@ PSA signed → assignment sent → assignment signed → title email, chained of
 The [owner cross-check](src/lib/contracts/owner-xcheck.ts) runs before every send. A multi-owner parcel, an entity owner (LLC/trust), or a name mismatch produces a SignWell **draft** for Marlon instead of a send — the design doc's "never auto" list, enforced in code.
 
 
+## What's still needed to go live
+
+Everything below is a credential or an account setting, not code:
+
+| Need | Where it goes | Blocks |
+|---|---|---|
+| Sendivo webhook URL configured in their dashboard | Sendivo → Settings → Webhooks → Inbound Message Received, pointed at `/api/webhooks/sendivo?token=<SENDIVO_WEBHOOK_TOKEN>` | Real inbound messages |
+| Sendivo native AI Responder disabled account-wide | Sendivo settings | The agent owning threads |
+| `ANTHROPIC_API_KEY` | `.env.local` + Vercel | Classification and drafting |
+| `MARLON_PHONE` | `.env.local` + Vercel | Urgent alerts + briefing |
+| SignWell key, template ids, role names | `.env.local` + Vercel | Contracts |
+| `RESEND_API_KEY` + `TITLE_EMAIL_FROM` | `.env.local` + Vercel | Title email |
+| Upstash Redis URL/token | `.env.local` + Vercel | Check cache, send locks, kill switch, alert throttling |
+| Neon `DATABASE_URL` + Vercel project | Vercel | Production deploy |
+
+The webhook payload shape in [webhook-schema.ts](src/lib/sendivo/webhook-schema.ts) is still inferred — SignWell's shapes came from their official SDK, but Sendivo's dashboard doesn't publish the webhook body. Unrecognized payloads are captured into `agent_actions` so the first real event tells us the shape.
+
 ## Milestones
 
 - [x] **M0 — Skeleton + Sendivo ingest** (scaffold, auth, CI, Docker, schema, webhook → contacts/conversations/messages persisting) — *pending: webhook URL configured in Sendivo + real webhook shape confirmation, Vercel deploy, AI Responder disabled account-wide*
@@ -82,4 +99,6 @@ The [owner cross-check](src/lib/contracts/owner-xcheck.ts) runs before every sen
 - [x] **M2 — CRM core** (Deal Room 3-pane, Property Context Card, Seller 360, Pipeline, campaign dashboard)
 - [x] **M3 — Agent in copilot** (state machine, classify + draft with dollar-validation, guardrails + kill switch, approval queue in the composer, edit-rate tracking, urgent SMS alerts) — *pending: `ANTHROPIC_API_KEY` and `MARLON_PHONE` so it can run live*
 - [x] **M4 — Contracts + routing + gating** (SignWell template sends + signed-webhook chain, owner XCHECK, title routing + email, campaign gate) — *pending: SignWell key + template/role ids, Resend key*
-- [ ] Ship Aug 31 — briefing cron, E2E, real seller thread in copilot
+- [x] **Daily briefing cron** (§11b ch.1) — `/api/cron/briefing`, scheduled 15:00 UTC (9am CST) in [vercel.json](vercel.json); Vercel runs crons on production deployments only
+- [x] **Playwright E2E** — 5 specs across all three CRM lenses
+- [ ] **Ship Aug 31** — Vercel deploy, one real seller thread end-to-end in copilot, Loom, explain-back #3

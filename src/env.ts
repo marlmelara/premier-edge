@@ -48,6 +48,8 @@ const envSchema = z.object({
   MARLON_PHONE: z.string().optional(),
   /** CC'd on title emails so Marlon has the paper trail in his inbox. */
   MARLON_EMAIL: z.string().optional(),
+  /** Vercel sends this as `Authorization: Bearer` on cron invocations. */
+  CRON_SECRET: z.string().optional(),
 });
 
 export type Env = z.infer<typeof envSchema>;
