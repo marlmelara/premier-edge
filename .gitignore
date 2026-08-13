@@ -42,3 +42,8 @@ next-env.d.ts
 !.env.example
 
 # drizzle studio / local db artifacts
+
+# playwright
+/test-results/
+/playwright-report/
+/blob-report/

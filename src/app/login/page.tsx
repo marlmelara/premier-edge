@@ -30,36 +30,36 @@ export default async function LoginPage({
   const { error } = await searchParams;
 
   return (
-    <main className="flex min-h-screen items-center justify-center bg-zinc-950">
-      <form action={login} className="w-full max-w-sm space-y-4 rounded-xl border border-zinc-800 bg-zinc-900 p-8">
+    <main className="flex min-h-screen items-center justify-center bg-background">
+      <form action={login} className="w-full max-w-sm space-y-4 rounded-xl border border-border bg-card p-8">
         <div>
-          <h1 className="text-xl font-semibold text-zinc-50">Premier Edge</h1>
-          <p className="text-sm text-zinc-400">Premier Equity Co. LLC</p>
+          <h1 className="text-xl font-semibold text-foreground">Premier Edge</h1>
+          <p className="text-sm text-muted-foreground">Premier Equity Co. LLC</p>
         </div>
         {error && <p className="text-sm text-red-400">Invalid email or password.</p>}
-        <label className="block text-sm text-zinc-300">
+        <label className="block text-sm text-foreground">
           Email
           <input
             name="email"
             type="email"
             required
             autoComplete="email"
-            className="mt-1 w-full rounded-md border border-zinc-700 bg-zinc-800 px-3 py-2 text-zinc-100 outline-none focus:border-zinc-500"
+            className="mt-1 w-full rounded-md border border-input bg-background px-3 py-2 text-foreground outline-none focus:border-ring"
           />
         </label>
-        <label className="block text-sm text-zinc-300">
+        <label className="block text-sm text-foreground">
           Password
           <input
             name="password"
             type="password"
             required
             autoComplete="current-password"
-            className="mt-1 w-full rounded-md border border-zinc-700 bg-zinc-800 px-3 py-2 text-zinc-100 outline-none focus:border-zinc-500"
+            className="mt-1 w-full rounded-md border border-input bg-background px-3 py-2 text-foreground outline-none focus:border-ring"
           />
         </label>
         <button
           type="submit"
-          className="w-full rounded-md bg-zinc-100 px-3 py-2 text-sm font-medium text-zinc-900 hover:bg-white"
+          className="w-full rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
         >
           Sign in
         </button>

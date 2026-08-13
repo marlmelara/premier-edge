@@ -3,7 +3,15 @@ import { z } from "zod";
 const authUserSchema = z.object({
   email: z.string().email(),
   name: z.string().min(1),
-  passwordHash: z.string().min(1),
+  // Shape-checked so a hash mangled by dotenv's `$` expansion fails loudly at
+  // startup instead of silently rejecting every login. Escape each `$` as `\$`
+  // in .env files (see .env.example).
+  passwordHash: z
+    .string()
+    .regex(
+      /^\$2[aby]\$\d{2}\$.{53}$/,
+      "passwordHash is not a valid bcrypt hash — in .env files each `$` must be escaped as `\\$`",
+    ),
 });
 
 const envSchema = z.object({
