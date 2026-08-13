@@ -80,22 +80,41 @@ export async function sendSellerMessage(
     return { ok: false, blocked: "send_failed", reason };
   }
 
-  const [message] = await db
-    .insert(messages)
-    .values({
-      conversationId,
-      direction: "outbound",
-      body,
-      sendivoMessageId,
-      status: "pending",
-      sentBy,
-    })
-    .returning();
+  // The SMS is already delivered at this point. If we can't record it, the
+  // thread cap and the audit trail silently under-count — so fail loudly rather
+  // than letting the agent send past its daily cap on this thread.
+  let message;
+  try {
+    [message] = await db
+      .insert(messages)
+      .values({
+        conversationId,
+        direction: "outbound",
+        body,
+        sendivoMessageId,
+        status: "pending",
+        sentBy,
+      })
+      .returning();
 
-  await db
-    .update(conversations)
-    .set({ lastOutboundAt: new Date(), ownedByEdge: true, updatedAt: new Date() })
-    .where(eq(conversations.id, conversationId));
+    await db
+      .update(conversations)
+      .set({ lastOutboundAt: new Date(), ownedByEdge: true, updatedAt: new Date() })
+      .where(eq(conversations.id, conversationId));
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    console.error("[send] message sent but not recorded", reason);
+    await db
+      .insert(agentActions)
+      .values({
+        conversationId,
+        type: "message_sent_unrecorded",
+        input: { body, sentBy, sendivoMessageId },
+        output: { reason },
+      })
+      .catch(() => {});
+    return { ok: false, blocked: "send_failed", reason: `delivered, but not recorded: ${reason}` };
+  }
 
   await db.insert(agentActions).values({
     conversationId,

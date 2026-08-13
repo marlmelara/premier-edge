@@ -1,0 +1,1 @@
+ALTER TABLE "deals" ADD COLUMN "closing_date" timestamp with time zone;

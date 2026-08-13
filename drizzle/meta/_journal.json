@@ -15,6 +15,13 @@
       "when": 1786566235541,
       "tag": "0001_reflective_killraven",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1786580825404,
+      "tag": "0002_petite_george_stacy",
+      "breakpoints": true
     }
   ]
 }

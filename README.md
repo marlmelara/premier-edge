@@ -102,3 +102,9 @@ The webhook payload shape in [webhook-schema.ts](src/lib/sendivo/webhook-schema.
 - [x] **Daily briefing cron** (§11b ch.1) — `/api/cron/briefing`, scheduled 15:00 UTC (9am CST) in [vercel.json](vercel.json); Vercel runs crons on production deployments only
 - [x] **Playwright E2E** — 5 specs across all three CRM lenses
 - [ ] **Ship Aug 31** — Vercel deploy, one real seller thread end-to-end in copilot, Loom, explain-back #3
+
+## Proposed design-doc amendment
+
+One change deviates from the design doc as written, flagged here rather than made silently (§ working agreement):
+
+**`deals.closing_date` (new column, not in §5).** The daily briefing's top-priority line is "closings within N days (address + countdown)". There is no closing date anywhere in the §5 model, and deriving one from `updated_at` produces a countdown that resets every time anything about the deal changes — actively misleading on exactly the line that should drive Marlon's morning. Deals without a date now report "at title, no date set" instead of a fabricated number. Accept the column or tell me where the date should live instead.

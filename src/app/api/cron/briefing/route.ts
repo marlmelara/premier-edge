@@ -25,11 +25,10 @@ export async function GET(req: NextRequest) {
   const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
 
   const [closings, awaiting, escalations, approvals, replies, optOutCount] = await Promise.all([
-    // Under-contract deals with a linked parcel, soonest first. Until a closing
-    // date column exists, "days out" counts from when the deal went under
-    // contract — replace with the real date when contracts carry one.
+    // Under-contract deals with a linked parcel. Deals without a confirmed
+    // closing date report as "at title" rather than getting a made-up countdown.
     db
-      .select({ address: parcels.address, parcelId: parcels.parcelId, updatedAt: deals.updatedAt })
+      .select({ address: parcels.address, parcelId: parcels.parcelId, closingDate: deals.closingDate })
       .from(deals)
       .innerJoin(parcels, eq(deals.parcelId, parcels.id))
       .where(eq(deals.stage, "under_contract"))
@@ -74,9 +73,11 @@ export async function GET(req: NextRequest) {
     closings: closings
       .map((c) => ({
         address: c.address ?? c.parcelId,
-        daysOut: Math.max(0, CLOSING_WINDOW_DAYS - Math.floor((Date.now() - c.updatedAt.getTime()) / 86_400_000)),
+        daysOut: c.closingDate ? Math.max(0, Math.ceil((c.closingDate.getTime() - Date.now()) / 86_400_000)) : null,
       }))
-      .sort((a, b) => a.daysOut - b.daysOut),
+      // Dated closings first, soonest to furthest; undated ones after.
+      .filter((c) => c.daysOut === null || c.daysOut <= CLOSING_WINDOW_DAYS)
+      .sort((a, b) => (a.daysOut ?? Infinity) - (b.daysOut ?? Infinity)),
     contractsAwaitingSignature: awaiting,
     escalationsPending: escalations,
     approvalsWaiting: approvals,

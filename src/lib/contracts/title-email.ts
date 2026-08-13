@@ -105,7 +105,10 @@ export async function routeToTitle(db: Db, dealId: string): Promise<TitleEmailRe
     input: { dealId, to: routing.company.emails, cc, source: routing.source },
     output: { attachments: attachments.length },
   });
-  await db.update(deals).set({ stage: "closed", updatedAt: new Date() }).where(eq(deals.id, dealId));
+  // Deliberately NOT 'closed': routing to title starts the closing, it doesn't
+  // finish it. The deal stays under contract until the title company closes it,
+  // which is weeks out and marked by hand.
+  await db.update(deals).set({ stage: "under_contract", updatedAt: new Date() }).where(eq(deals.id, dealId));
 
   return { ok: true, to: routing.company.emails, source: routing.source };
 }

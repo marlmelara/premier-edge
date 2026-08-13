@@ -188,6 +188,11 @@ export const deals = pgTable("deals", {
   lastOffer: money("last_offer"),
   sellerCounter: money("seller_counter"),
   deadReason: text("dead_reason"),
+  // DOC AMENDMENT (proposed, Aug 12 2026): not in design doc §5. The §11b
+  // briefing's top-priority line is "closings within N days (address +
+  // countdown)", which needs a real date — deriving it from updated_at gives a
+  // countdown that resets on every edit. Set when title routing confirms a date.
+  closingDate: timestamp("closing_date", { withTimezone: true }),
   ...timestamps,
 });
 

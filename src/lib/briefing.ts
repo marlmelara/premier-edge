@@ -6,8 +6,12 @@
  */
 
 export type BriefingData = {
-  /** Closings inside the window, soonest first. */
-  closings: { address: string; daysOut: number }[];
+  /**
+   * Closings inside the window, soonest first. `daysOut` is null when the deal
+   * has no confirmed closing date yet — reported as "at title" rather than
+   * inventing a countdown.
+   */
+  closings: { address: string; daysOut: number | null }[];
   contractsAwaitingSignature: number;
   escalationsPending: number;
   approvalsWaiting: number;
@@ -31,7 +35,11 @@ export function composeBriefing(data: BriefingData, now: Date = new Date()): str
   const lines: string[] = [];
 
   for (const closing of data.closings) {
-    lines.push(`⏰ ${closing.address} closes in ${closing.daysOut}d`);
+    lines.push(
+      closing.daysOut === null
+        ? `⏰ ${closing.address} — at title, no date set`
+        : `⏰ ${closing.address} closes in ${closing.daysOut}d`,
+    );
   }
   if (data.contractsAwaitingSignature > 0) {
     lines.push(`✍️ ${data.contractsAwaitingSignature} contract${plural(data.contractsAwaitingSignature)} awaiting signature`);

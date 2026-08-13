@@ -76,6 +76,9 @@ async function runTurnInner(db: Db, conversationId: string): Promise<AgentRunOut
   const ordered = [...thread].reverse();
   const latestInbound = [...ordered].reverse().find((m) => m.direction === "inbound");
   if (!latestInbound) return { ran: false, reason: "no inbound message to answer" };
+  // Exclude the message under classification by id, not by position: it isn't
+  // always last (Marlon may have replied after it).
+  const priorThread = ordered.filter((m) => m.id !== latestInbound.id);
 
   // --- Classify (language only) ---
   let classification;
@@ -83,7 +86,7 @@ async function runTurnInner(db: Db, conversationId: string): Promise<AgentRunOut
     classification = await classifyInbound({
       body: latestInbound.body,
       conversationState: currentState,
-      recentThread: ordered.slice(0, -1).map((m) => ({ direction: m.direction, body: m.body })),
+      recentThread: priorThread.map((m) => ({ direction: m.direction, body: m.body })),
     });
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
@@ -134,10 +137,17 @@ async function runTurnInner(db: Db, conversationId: string): Promise<AgentRunOut
   }
 
   if (classification.classification === "opt_out") {
+    await db
+      .update(deals)
+      .set({ stage: "dead", deadReason: "opted out", updatedAt: new Date() })
+      .where(eq(deals.id, deal.id));
     return { ran: true, classification: "opt_out", state: "OPTED_OUT", drafted: false, escalated: false };
   }
 
   if (classification.classification === "accepted") {
+    // The pipeline is a lens on this same row (§5) — advance the deal, not just
+    // the conversation, or accepted deals keep showing as needing an offer.
+    await db.update(deals).set({ stage: "accepted", updatedAt: new Date() }).where(eq(deals.id, deal.id));
     // Time-sensitive and never auto-answered: contracts are human-driven (§6).
     await sendUrgentAlert(db, {
       type: "offer_accepted",
@@ -148,7 +158,10 @@ async function runTurnInner(db: Db, conversationId: string): Promise<AgentRunOut
   }
 
   if (classification.classification === "not_interested") {
-    await db.update(deals).set({ deadReason: "seller declined", updatedAt: new Date() }).where(eq(deals.id, deal.id));
+    await db
+      .update(deals)
+      .set({ stage: "dead", deadReason: "seller declined", updatedAt: new Date() })
+      .where(eq(deals.id, deal.id));
     return { ran: true, classification: "not_interested", state: "DEAD", drafted: false, escalated: false };
   }
 

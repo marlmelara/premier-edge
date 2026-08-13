@@ -28,6 +28,12 @@ describe("composeBriefing", () => {
     expect(message).not.toContain("💬");
   });
 
+  it("reports an undated closing honestly instead of inventing a countdown", () => {
+    const message = composeBriefing({ ...empty, closings: [{ address: "3219 15TH ST SW", daysOut: null }] }, AUG_12);
+    expect(message).toContain("⏰ 3219 15TH ST SW — at title, no date set");
+    expect(message).not.toMatch(/closes in \d/);
+  });
+
   it("orders lines by the design doc's priority", () => {
     const message = composeBriefing(
       {

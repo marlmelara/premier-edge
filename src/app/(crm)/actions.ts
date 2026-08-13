@@ -1,17 +1,18 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { auth } from "@/auth";
 import { isCountyKey } from "@/adapters/registry";
 import { getDb } from "@/db";
-import { criteriaSets, deals } from "@/db/schema";
+import { agentActions, criteriaSets, deals, offers } from "@/db/schema";
 import { verifyParcel } from "@/lib/eligibility/verify-parcel";
 import { anchorOffer, fromCents, maxOffer, toCents } from "@/lib/eligibility/offer-math";
 import { sendSellerMessage } from "@/lib/sendivo/send";
+import { sendUrgentAlert } from "@/lib/alerts";
 import { getPendingDraft, recordDraftResolution } from "@/lib/agent/drafts";
 import { setKillSwitch } from "@/lib/agent/guardrails";
-import { offers } from "@/db/schema";
+import { formatMoney } from "@/lib/format";
 
 async function requireSession() {
   const session = await auth();
@@ -68,15 +69,35 @@ export async function resolveDraftAction(
   await recordDraftResolution(db, {
     conversationId,
     draftId,
-    // An unmodified body is an approval; any change is an edit.
-    resolution: body === pending.message ? "approved" : "edited",
+    // Compare trimmed to trimmed: a draft that merely ends in whitespace is an
+    // approval, not an edit — the edit rate gates autonomy graduation.
+    resolution: body === pending.message.trim() ? "approved" : "edited",
     originalMessage: pending.message,
     finalMessage: body,
   });
 
   // A sent offer becomes an immutable snapshot and updates the deal's numbers.
+  // The SMS is already gone, so a failure here must be loud, never silent: an
+  // unrecorded offer makes the next turn re-offer the anchor to a seller who
+  // has already been quoted.
   if (pending.authorizedOfferCents != null) {
-    await recordOffer(db, conversationId, pending.authorizedOfferCents);
+    try {
+      await recordOffer(db, conversationId, pending.authorizedOfferCents);
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      await db.insert(agentActions).values({
+        conversationId,
+        type: "offer_record_failed",
+        input: { amountCents: pending.authorizedOfferCents },
+        output: { detail },
+      });
+      await sendUrgentAlert(db, {
+        type: "guardrail_bug",
+        conversationId,
+        message: `⚠️ Offer ${formatMoney(pending.authorizedOfferCents / 100)} was SENT but not recorded: ${detail}. Set the last offer by hand before the agent replies again.`,
+      });
+      return { ok: false as const, reason: `sent, but the offer failed to record: ${detail}` };
+    }
   }
 
   revalidatePath("/deal-room");
@@ -90,24 +111,23 @@ async function recordOffer(db: ReturnType<typeof getDb>, conversationId: string,
   });
   if (!conversation) return;
 
-  const existing = await db.query.offers.findMany({
-    where: eq(offers.dealId, conversation.dealId),
-    columns: { version: true },
-  });
-  const version = existing.length + 1;
   const amount = fromCents(amountCents);
 
-  await db.insert(offers).values({
-    dealId: conversation.dealId,
-    version,
-    amount,
-    stateAtOffer: conversation.state,
-    assumptions: { source: "agent_draft_approved", conversationId },
+  // Version from MAX(version)+1 in SQL, not a row count: counting breaks if any
+  // offer is ever removed, and races between two concurrent approvals.
+  await db.transaction(async (tx) => {
+    await tx.insert(offers).values({
+      dealId: conversation.dealId,
+      version: sql`(SELECT COALESCE(MAX(${offers.version}), 0) + 1 FROM ${offers} WHERE ${offers.dealId} = ${conversation.dealId})`,
+      amount,
+      stateAtOffer: conversation.state,
+      assumptions: { source: "agent_draft_approved", conversationId },
+    });
+    await tx
+      .update(deals)
+      .set({ lastOffer: amount, stage: "offer", updatedAt: new Date() })
+      .where(eq(deals.id, conversation.dealId));
   });
-  await db
-    .update(deals)
-    .set({ lastOffer: amount, stage: "offer", updatedAt: new Date() })
-    .where(eq(deals.id, conversation.dealId));
 }
 
 /** Kill switch (§6): stops the agent from producing new drafts, instantly. */
@@ -169,7 +189,17 @@ export async function attachParcelAction(dealId: string, county: string, parcelI
 
   await db
     .update(deals)
-    .set({ parcelId: result.parcelRowId, verdict: result.verdict, ...numbers, updatedAt: new Date() })
+    .set({
+      parcelId: result.parcelRowId,
+      verdict: result.verdict,
+      // A passing verdict moves the deal forward on the pipeline, but never
+      // backwards from a stage it has already reached.
+      ...(result.verdict === "pass" && (deal.stage === "lead" || deal.stage === "qualifying")
+        ? { stage: "verified" as const }
+        : {}),
+      ...numbers,
+      updatedAt: new Date(),
+    })
     .where(eq(deals.id, dealId));
 
   revalidatePath("/deal-room");

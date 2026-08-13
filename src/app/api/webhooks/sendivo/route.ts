@@ -9,6 +9,14 @@ import { ingestInboundMessage, mapSendivoContact } from "@/lib/sendivo/ingest";
 import { classifyWebhook } from "@/lib/sendivo/webhook-schema";
 
 /**
+ * The agent turn runs inline here and makes two model calls, which take longer
+ * than the platform default. Vercel caps this at the plan's ceiling (60s on
+ * Pro), so the run completes instead of being killed after the message is
+ * persisted but before the draft is written.
+ */
+export const maxDuration = 60;
+
+/**
  * Sendivo webhook receiver. Sendivo's webhook config is just a URL (no signing
  * mechanism in their docs), so the shared secret rides in the URL:
  * https://<host>/api/webhooks/sendivo?token=<SENDIVO_WEBHOOK_TOKEN>
