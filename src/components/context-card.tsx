@@ -1,5 +1,6 @@
 import Link from "next/link";
-import type { checks as checksTable, contacts, criteriaSets, deals, parcels } from "@/db/schema";
+import type { checks as checksTable, contacts, contracts as contractsTable, criteriaSets, deals, parcels } from "@/db/schema";
+import { crossCheckOwner } from "@/lib/contracts/owner-xcheck";
 import { Badge } from "@/components/ui/badge";
 import { ParcelMap } from "@/components/parcel-map";
 import { AttachParcelForm } from "@/components/attach-parcel";
@@ -14,6 +15,7 @@ type Parcel = typeof parcels.$inferSelect;
 type Check = typeof checksTable.$inferSelect;
 type Contact = typeof contacts.$inferSelect;
 type Criteria = typeof criteriaSets.$inferSelect;
+type Contract = typeof contractsTable.$inferSelect;
 
 const COUNTY_LABELS: Record<string, string> = { st_lucie: "St. Lucie", lee: "Lee", charlotte: "Charlotte" };
 const CHECK_LABELS: Record<string, string> = { county: "County", fema: "Flood zone", nwi: "Wetlands", sqft: "Size" };
@@ -33,12 +35,14 @@ export function ContextCard({
   checks,
   contact,
   criteria,
+  contracts = [],
 }: {
   deal: Deal;
   parcel: Parcel | null;
   checks: Check[];
   contact: Contact | null;
   criteria: Criteria | null;
+  contracts?: Contract[];
 }) {
   if (!parcel) {
     return (
@@ -67,6 +71,7 @@ export function ContextCard({
         .map((v) => v / geometry.coordinates[0].length)
     : null;
 
+  const xcheck = crossCheckOwner(contact?.name, parcel.ownerNameRaw);
   const failedKinds = checks.filter((c) => c.result === "fail").map((c) => CHECK_LABELS[c.kind] ?? c.kind);
   const errorKinds = checks.filter((c) => c.result === "error").map((c) => CHECK_LABELS[c.kind] ?? c.kind);
 
@@ -177,10 +182,25 @@ export function ContextCard({
       {/* Map snapshot */}
       {geometry && <ParcelMap geometry={geometry} />}
 
-      {/* Contract status chips land in M4 */}
-      <div className="flex flex-wrap gap-2">
-        <Badge variant="outline">PSA — not sent</Badge>
-        <Badge variant="outline">Assignment — not sent</Badge>
+      {/* Contract status + owner cross-check */}
+      <div className="space-y-2">
+        <div className="flex flex-wrap gap-2">
+          {(["psa", "assignment"] as const).map((kind) => {
+            const contract = contracts.find((c) => c.kind === kind);
+            return (
+              <Badge
+                key={kind}
+                variant="outline"
+                className={contract?.status === "completed" ? "border-green-700 text-green-300" : undefined}
+              >
+                {kind === "psa" ? "PSA" : "Assignment"} — {contract?.status?.replace(/_/g, " ") ?? "not sent"}
+              </Badge>
+            );
+          })}
+        </div>
+        <p className={`text-[11px] ${xcheck.requiresHumanApproval ? "text-yellow-400" : "text-muted-foreground"}`}>
+          Owner XCHECK: {xcheck.verdict} — {xcheck.reason}
+        </p>
       </div>
 
       {/* Quick links */}

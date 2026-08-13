@@ -68,11 +68,18 @@ Copilot-only: every seller-facing message is approved by a human in the Deal Roo
 
 The LLM only classifies inbound messages and writes wording; offers come from the concession ladder in [offer-math.ts](src/lib/eligibility/offer-math.ts).
 
+## Contracts (M4)
+
+PSA signed → assignment sent → assignment signed → title email, chained off SignWell's signed webhook ([route](src/app/api/webhooks/signwell/route.ts), HMAC-SHA256 over `"{type}@{time}"`). Contract fields come from the county-verified parcel and the immutable accepted-offer snapshot — never from anything the seller typed.
+
+The [owner cross-check](src/lib/contracts/owner-xcheck.ts) runs before every send. A multi-owner parcel, an entity owner (LLC/trust), or a name mismatch produces a SignWell **draft** for Marlon instead of a send — the design doc's "never auto" list, enforced in code.
+
+
 ## Milestones
 
 - [x] **M0 — Skeleton + Sendivo ingest** (scaffold, auth, CI, Docker, schema, webhook → contacts/conversations/messages persisting) — *pending: webhook URL configured in Sendivo + real webhook shape confirmation, Vercel deploy, AI Responder disabled account-wide*
 - [x] **M1 — Eligibility + numbers** (county adapter registry with St. Lucie/Lee/Charlotte live, FEMA NFHL + NWI clients, offer math, `verifyParcel` persisting checks + optional Redis cache) — *pending: Marlon's unit tests on offer math + zone/wetland logic (working agreement §13)*
 - [x] **M2 — CRM core** (Deal Room 3-pane, Property Context Card, Seller 360, Pipeline, campaign dashboard)
 - [x] **M3 — Agent in copilot** (state machine, classify + draft with dollar-validation, guardrails + kill switch, approval queue in the composer, edit-rate tracking, urgent SMS alerts) — *pending: `ANTHROPIC_API_KEY` and `MARLON_PHONE` so it can run live*
-- [ ] M4 — Contracts + routing + gating (SignWell, XCHECK, title email)
+- [x] **M4 — Contracts + routing + gating** (SignWell template sends + signed-webhook chain, owner XCHECK, title routing + email, campaign gate) — *pending: SignWell key + template/role ids, Resend key*
 - [ ] Ship Aug 31 — briefing cron, E2E, real seller thread in copilot

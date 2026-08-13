@@ -33,9 +33,21 @@ const envSchema = z.object({
   UPSTASH_REDIS_REST_URL: z.string().optional(),
   UPSTASH_REDIS_REST_TOKEN: z.string().optional(),
   SIGNWELL_API_KEY: z.string().optional(),
+  /** Webhook secret id — also the HMAC key SignWell signs events with. */
+  SIGNWELL_WEBHOOK_ID: z.string().optional(),
+  SIGNWELL_PSA_TEMPLATE_ID: z.string().optional(),
+  SIGNWELL_PSA_SELLER_ROLE: z.string().optional(),
+  SIGNWELL_ASSIGNMENT_TEMPLATE_ID: z.string().optional(),
+  SIGNWELL_ASSIGNMENT_BUYER_ROLE: z.string().optional(),
+  SIGNWELL_TEST_MODE: z.string().optional(),
+  /** Title-company email delivery. */
+  RESEND_API_KEY: z.string().optional(),
+  TITLE_EMAIL_FROM: z.string().optional(),
   ANTHROPIC_API_KEY: z.string().optional(),
   /** Marlon's cell — destination for §11b alerts and the daily briefing. */
   MARLON_PHONE: z.string().optional(),
+  /** CC'd on title emails so Marlon has the paper trail in his inbox. */
+  MARLON_EMAIL: z.string().optional(),
 });
 
 export type Env = z.infer<typeof envSchema>;

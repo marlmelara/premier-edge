@@ -143,6 +143,7 @@ export default async function DealRoomPage({
             checks={detail.checks}
             contact={detail.contact}
             criteria={detail.criteria}
+            contracts={detail.contracts}
           />
         ) : (
           <div className="p-4 text-sm text-muted-foreground">Property context appears here.</div>

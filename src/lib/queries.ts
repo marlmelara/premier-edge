@@ -2,16 +2,20 @@ import { and, desc, eq, ilike, inArray, or, sql, type SQL } from "drizzle-orm";
 import { getDb } from "@/db";
 import {
   agentActions,
+  builders,
   campaigns,
   checks,
   contacts,
+  contracts,
   conversations,
   criteriaSets,
   deals,
   messages,
   offers,
   parcels,
+  titleCompanies,
 } from "@/db/schema";
+import { evaluateCampaignGate } from "@/lib/campaigns/gating";
 
 /**
  * Read-model queries for the three CRM lenses (design doc §2). All three are
@@ -87,6 +91,11 @@ export async function getConversationDetail(conversationId: string) {
     ? await db.query.criteriaSets.findFirst({ where: eq(criteriaSets.id, campaign.criteriaId) })
     : null;
 
+  const dealContracts = await db.query.contracts.findMany({
+    where: eq(contracts.dealId, deal.id),
+    orderBy: desc(contracts.createdAt),
+  });
+
   const parcel = deal.parcelId ? await db.query.parcels.findFirst({ where: eq(parcels.id, deal.parcelId) }) : null;
   const parcelChecks = parcel
     ? await db.query.checks.findMany({
@@ -110,6 +119,7 @@ export async function getConversationDetail(conversationId: string) {
     criteria: criteria ?? null,
     parcel: parcel ?? null,
     checks: [...latestChecks.values()],
+    contracts: dealContracts,
     thread,
   };
 }
@@ -149,6 +159,44 @@ export async function getSeller360(contactId: string) {
 
   const campaignNames = new Map(campaignRows.map((c) => [c.id, c.name]));
   return { contact, deals: contactDeals, conversations: convs, offers: dealOffers, parcels: dealParcels, actions, campaignNames };
+}
+
+/** Campaigns with their §10 gate inputs resolved, for the campaign dashboard. */
+export async function listCampaignsWithGate(sendivoHealthy: boolean, agentConfigured: boolean) {
+  const db = getDb();
+  const rows = await db
+    .select({
+      id: campaigns.id,
+      name: campaigns.name,
+      status: campaigns.status,
+      market: campaigns.market,
+      criteriaId: campaigns.criteriaId,
+      builderId: campaigns.builderId,
+      titleCompanyId: campaigns.titleCompanyId,
+      sendivoCampaignId: campaigns.sendivoCampaignId,
+      builderTitleCompanyId: builders.preferredTitleCompanyId,
+    })
+    .from(campaigns)
+    .leftJoin(builders, eq(campaigns.builderId, builders.id))
+    .orderBy(desc(campaigns.createdAt));
+
+  const [defaultTitle] = await db
+    .select({ id: titleCompanies.id })
+    .from(titleCompanies)
+    .where(eq(titleCompanies.isDefaultFl, true))
+    .limit(1);
+
+  return rows.map((row) => ({
+    ...row,
+    gate: evaluateCampaignGate({
+      hasCriteria: Boolean(row.criteriaId),
+      hasBuilder: Boolean(row.builderId),
+      hasTitleRouting: Boolean(row.titleCompanyId ?? row.builderTitleCompanyId ?? defaultTitle?.id),
+      sendivoHealthy,
+      hasSendingNumber: Boolean(row.sendivoCampaignId),
+      agentConfigured,
+    }),
+  }));
 }
 
 export type PipelineFilters = { stage?: string; verdict?: string; q?: string };

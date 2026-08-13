@@ -3,7 +3,9 @@ import { getDb } from "@/db";
 import { agentActions, conversations, messages } from "@/db/schema";
 import { getBlasts, getDeliveryMetrics } from "@/lib/sendivo/client";
 import { isKillSwitchOn } from "@/lib/agent/guardrails";
+import { hasAnthropicKey } from "@/lib/agent/anthropic";
 import { KillSwitch } from "@/components/kill-switch";
+import { listCampaignsWithGate } from "@/lib/queries";
 import { getRedis } from "@/lib/redis";
 import { formatDateTime } from "@/lib/format";
 
@@ -62,6 +64,7 @@ export default async function CampaignsPage() {
 
   const redisAvailable = getRedis() !== null;
   const killSwitchOn = await isKillSwitchOn();
+  const campaignGates = await listCampaignsWithGate(metrics.ok, hasAnthropicKey());
 
   const [local] = await db
     .select({
@@ -122,6 +125,41 @@ export default async function CampaignsPage() {
           <Tile label="Edit rate" value={editRate} hint="auto-send at <10%" />
           <Tile label="Sends blocked" value={agentStats.blocked.toString()} hint="guardrails" />
           <Tile label="Threads" value={local.conversations.toString()} hint={`${local.inbound} in / ${local.outbound} out`} />
+        </div>
+      </section>
+
+      <section>
+        <h2 className="text-sm font-semibold text-muted-foreground">Campaign readiness (§10 gate)</h2>
+        {campaignGates.length === 0 && <p className="mt-2 text-sm text-muted-foreground">No campaigns yet.</p>}
+        <div className="mt-2 space-y-2">
+          {campaignGates.map((campaign) => (
+            <div key={campaign.id} className="rounded border border-border p-3">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm font-medium">{campaign.name}</p>
+                  <p className="text-[11px] text-muted-foreground">
+                    {campaign.market ?? "no market"} · {campaign.status}
+                  </p>
+                </div>
+                <span className={`text-xs ${campaign.gate.canGoLive ? "text-green-400" : "text-yellow-400"}`}>
+                  {campaign.gate.canGoLive ? "✅ ready to go live" : `${campaign.gate.blockers.length} blocking`}
+                </span>
+              </div>
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                {campaign.gate.checks.map((check) => (
+                  <span
+                    key={check.key}
+                    title={check.passed ? "ready" : check.fix}
+                    className={`rounded px-1.5 py-0.5 text-[10px] ${
+                      check.passed ? "bg-green-950 text-green-300" : "bg-yellow-950 text-yellow-300"
+                    }`}
+                  >
+                    {check.passed ? "✓" : "✗"} {check.label}
+                  </span>
+                ))}
+              </div>
+            </div>
+          ))}
         </div>
       </section>
 
