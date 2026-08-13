@@ -1,0 +1,77 @@
+import { z } from "zod";
+import { INBOUND_CLASSES, type InboundClass } from "./state-machine";
+import { jsonCall } from "./anthropic";
+
+/**
+ * Classify one inbound seller message. Language only — the returned class
+ * drives a code-owned state transition (§6), and any counter-offer amount the
+ * seller names is recorded but never used as an offer without code re-deriving
+ * what we're allowed to pay.
+ */
+
+const classificationSchema = z.object({
+  classification: z.enum(INBOUND_CLASSES),
+  confidence: z.number().min(0).max(1),
+  seller_counter_amount: z.number().nullable(),
+  reasoning: z.string(),
+});
+
+export type Classification = z.infer<typeof classificationSchema> & { classification: InboundClass };
+
+const CLASSIFICATION_JSON_SCHEMA = {
+  type: "object",
+  properties: {
+    classification: { type: "string", enum: [...INBOUND_CLASSES] },
+    confidence: { type: "number" },
+    seller_counter_amount: {
+      type: ["number", "null"],
+      description: "Dollar amount the seller named as their price, or null if they named none.",
+    },
+    reasoning: { type: "string" },
+  },
+  required: ["classification", "confidence", "seller_counter_amount", "reasoning"],
+  additionalProperties: false,
+} as const;
+
+const SYSTEM = `You classify inbound SMS replies from landowners who received a text asking whether they'd sell a vacant lot.
+
+Pick exactly one classification:
+- interested: open to selling or wants to hear more
+- not_interested: declines, says not selling
+- asking_price: asks what we'd pay, without naming a number
+- counter_offer: names a price they want
+- accepted: agrees to a specific price we offered
+- wrong_person: says they don't own it, sold it already, or we have the wrong number
+- question_about_process: asks how this works, who we are, closing costs, timing
+- opt_out: asks to stop being contacted, in any wording
+- off_script: anything else, including hostility, confusion, legal threats, or a message you cannot place confidently
+
+Set confidence to how certain you are. Use off_script when unsure rather than guessing.
+If the seller names a dollar amount as their asking price, put the number in seller_counter_amount; otherwise null.
+Keep reasoning to one sentence.`;
+
+export async function classifyInbound(params: {
+  body: string;
+  conversationState: string;
+  recentThread: { direction: string; body: string }[];
+}): Promise<Classification> {
+  const transcript = params.recentThread
+    .map((m) => `${m.direction === "inbound" ? "Seller" : "Us"}: ${m.body}`)
+    .join("\n");
+
+  const user = `Conversation state: ${params.conversationState}
+
+Recent thread:
+${transcript || "(no prior messages)"}
+
+Classify this new inbound message:
+${params.body}`;
+
+  return (await jsonCall({
+    system: SYSTEM,
+    user,
+    schema: classificationSchema,
+    jsonSchema: CLASSIFICATION_JSON_SCHEMA,
+    effort: "low",
+  })) as Classification;
+}

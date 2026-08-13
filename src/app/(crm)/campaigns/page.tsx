@@ -2,6 +2,9 @@ import { sql } from "drizzle-orm";
 import { getDb } from "@/db";
 import { agentActions, conversations, messages } from "@/db/schema";
 import { getBlasts, getDeliveryMetrics } from "@/lib/sendivo/client";
+import { isKillSwitchOn } from "@/lib/agent/guardrails";
+import { KillSwitch } from "@/components/kill-switch";
+import { getRedis } from "@/lib/redis";
 import { formatDateTime } from "@/lib/format";
 
 export const dynamic = "force-dynamic";
@@ -57,6 +60,9 @@ export default async function CampaignsPage() {
       .then((r) => r[0]),
   ]);
 
+  const redisAvailable = getRedis() !== null;
+  const killSwitchOn = await isKillSwitchOn();
+
   const [local] = await db
     .select({
       conversations: sql<number>`(SELECT COUNT(*) FROM ${conversations})`,
@@ -105,7 +111,10 @@ export default async function CampaignsPage() {
       </section>
 
       <section>
-        <h2 className="text-sm font-semibold text-muted-foreground">Agent stats (autonomy evidence)</h2>
+        <div className="flex items-center justify-between">
+          <h2 className="text-sm font-semibold text-muted-foreground">Agent stats (autonomy evidence)</h2>
+          <KillSwitch initialOn={killSwitchOn} available={redisAvailable} />
+        </div>
         <div className="mt-2 grid grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-6">
           <Tile label="Drafts" value={agentStats.drafts.toString()} hint="M3" />
           <Tile label="Approved" value={agentStats.approved.toString()} />

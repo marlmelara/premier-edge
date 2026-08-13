@@ -1,0 +1,302 @@
+import { desc, eq } from "drizzle-orm";
+import type { Db } from "@/db";
+import { agentActions, campaigns, contacts, conversations, criteriaSets, deals, messages, parcels } from "@/db/schema";
+import {
+  anchorOffer,
+  fromCents,
+  maxOffer,
+  nextAllowedOffer,
+  toCents,
+  type OfferCriteria,
+} from "@/lib/eligibility/offer-math";
+import { sendUrgentAlert } from "@/lib/alerts";
+import { formatPhone } from "@/lib/format";
+import { AgentRefusal, hasAnthropicKey } from "./anthropic";
+import { classifyInbound } from "./classify";
+import { draftReply } from "./draft";
+import {
+  acquireRunLock,
+  dollarValidationFailures,
+  isKillSwitchOn,
+  outboundToday,
+  releaseRunLock,
+  THREAD_DAILY_CAP,
+} from "./guardrails";
+import { ESCALATING_CLASSES, isConversationState, isTerminal, nextState, type InboundClass } from "./state-machine";
+
+/**
+ * The agent turn: one inbound message in, at most one *pending* draft out.
+ * Copilot mode (design doc §6) — nothing is ever sent from here. Marlon
+ * approves, edits, or rejects in the Deal Room composer.
+ */
+
+const CONFIDENCE_FLOOR = 0.7;
+
+export type AgentRunOutcome =
+  | { ran: false; reason: string }
+  | { ran: true; classification: InboundClass; state: string; drafted: boolean; escalated: boolean };
+
+export async function runAgentTurn(db: Db, conversationId: string): Promise<AgentRunOutcome> {
+  if (!hasAnthropicKey()) return { ran: false, reason: "ANTHROPIC_API_KEY not configured" };
+  if (await isKillSwitchOn()) {
+    await db.insert(agentActions).values({
+      conversationId,
+      type: "agent_skipped",
+      input: { reason: "kill_switch" },
+    });
+    return { ran: false, reason: "kill switch is on" };
+  }
+  if (!(await acquireRunLock(conversationId))) return { ran: false, reason: "another run in flight" };
+
+  try {
+    return await runTurnInner(db, conversationId);
+  } finally {
+    await releaseRunLock(conversationId);
+  }
+}
+
+async function runTurnInner(db: Db, conversationId: string): Promise<AgentRunOutcome> {
+  const conversation = await db.query.conversations.findFirst({ where: eq(conversations.id, conversationId) });
+  if (!conversation) return { ran: false, reason: "conversation not found" };
+
+  const currentState = isConversationState(conversation.state) ? conversation.state : "NEW";
+  if (isTerminal(currentState)) return { ran: false, reason: `conversation is ${currentState}` };
+
+  const deal = await db.query.deals.findFirst({ where: eq(deals.id, conversation.dealId) });
+  if (!deal) return { ran: false, reason: "deal not found" };
+
+  const contact = await db.query.contacts.findFirst({ where: eq(contacts.id, deal.contactId) });
+  if (contact?.optedOut) return { ran: false, reason: "contact opted out" };
+
+  const thread = await db.query.messages.findMany({
+    where: eq(messages.conversationId, conversationId),
+    orderBy: desc(messages.createdAt),
+    limit: 12,
+  });
+  const ordered = [...thread].reverse();
+  const latestInbound = [...ordered].reverse().find((m) => m.direction === "inbound");
+  if (!latestInbound) return { ran: false, reason: "no inbound message to answer" };
+
+  // --- Classify (language only) ---
+  let classification;
+  try {
+    classification = await classifyInbound({
+      body: latestInbound.body,
+      conversationState: currentState,
+      recentThread: ordered.slice(0, -1).map((m) => ({ direction: m.direction, body: m.body })),
+    });
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    await db.insert(agentActions).values({
+      conversationId,
+      type: "classify_failed",
+      input: { messageId: latestInbound.id },
+      output: { detail },
+    });
+    await escalate(db, conversationId, `classification failed: ${detail}`, contact?.phone);
+    return { ran: true, classification: "off_script", state: "ESCALATED", drafted: false, escalated: true };
+  }
+
+  await db.insert(agentActions).values({
+    conversationId,
+    type: "classified",
+    input: { messageId: latestInbound.id, body: latestInbound.body },
+    output: classification,
+  });
+  await db
+    .update(messages)
+    .set({ classifiedAs: classification.classification, updatedAt: new Date() })
+    .where(eq(messages.id, latestInbound.id));
+
+  // --- Code owns the transition ---
+  const target = nextState(currentState, classification.classification);
+  const lowConfidence = classification.confidence < CONFIDENCE_FLOOR;
+  const mustEscalate = ESCALATING_CLASSES.includes(classification.classification) || lowConfidence;
+
+  await db
+    .update(conversations)
+    .set({ state: mustEscalate ? "ESCALATED" : target, updatedAt: new Date() })
+    .where(eq(conversations.id, conversationId));
+
+  if (classification.seller_counter_amount != null) {
+    await db
+      .update(deals)
+      .set({ sellerCounter: classification.seller_counter_amount.toFixed(2), updatedAt: new Date() })
+      .where(eq(deals.id, deal.id));
+  }
+
+  if (mustEscalate) {
+    const why = lowConfidence
+      ? `low confidence (${classification.confidence.toFixed(2)}) on "${latestInbound.body.slice(0, 60)}"`
+      : `${classification.classification}: "${latestInbound.body.slice(0, 60)}"`;
+    await escalate(db, conversationId, why, contact?.phone);
+    return { ran: true, classification: classification.classification, state: "ESCALATED", drafted: false, escalated: true };
+  }
+
+  if (classification.classification === "opt_out") {
+    return { ran: true, classification: "opt_out", state: "OPTED_OUT", drafted: false, escalated: false };
+  }
+
+  if (classification.classification === "accepted") {
+    // Time-sensitive and never auto-answered: contracts are human-driven (§6).
+    await sendUrgentAlert(db, {
+      type: "offer_accepted",
+      conversationId,
+      message: `🚨 ACCEPTED — ${contact?.name ?? formatPhone(contact?.phone ?? "")} accepted${deal.lastOffer ? ` $${deal.lastOffer}` : ""}. Open the Deal Room.`,
+    });
+    return { ran: true, classification: "accepted", state: "ACCEPTED", drafted: false, escalated: false };
+  }
+
+  if (classification.classification === "not_interested") {
+    await db.update(deals).set({ deadReason: "seller declined", updatedAt: new Date() }).where(eq(deals.id, deal.id));
+    return { ran: true, classification: "not_interested", state: "DEAD", drafted: false, escalated: false };
+  }
+
+  // --- Guardrail: thread cap ---
+  if ((await outboundToday(db, conversationId)) >= THREAD_DAILY_CAP) {
+    await db.insert(agentActions).values({
+      conversationId,
+      type: "agent_skipped",
+      input: { reason: "thread_daily_cap", cap: THREAD_DAILY_CAP },
+    });
+    return { ran: true, classification: classification.classification, state: target, drafted: false, escalated: false };
+  }
+
+  // --- Code decides the money, if any ---
+  const authorized = await authorizeOffer(db, deal.id, classification.classification, target);
+  if (authorized.kind === "ceiling_reached") {
+    await escalate(db, conversationId, "ceiling reached — no room left on the concession ladder", contact?.phone);
+    return { ran: true, classification: classification.classification, state: "ESCALATED", drafted: false, escalated: true };
+  }
+
+  const parcel = deal.parcelId ? await db.query.parcels.findFirst({ where: eq(parcels.id, deal.parcelId) }) : null;
+
+  // --- Draft, then validate every dollar it wrote ---
+  let draft;
+  try {
+    draft = await draftReply({
+      classification: classification.classification,
+      conversationState: target,
+      sellerName: contact?.name,
+      parcelAddress: parcel?.address,
+      county: parcel?.county,
+      authorizedOfferCents: authorized.kind === "offer" ? authorized.cents : null,
+      sellerCounterCents: deal.sellerCounter ? toCents(deal.sellerCounter) : null,
+      recentThread: ordered.map((m) => ({ direction: m.direction, body: m.body })),
+    });
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    const isRefusal = error instanceof AgentRefusal;
+    await db.insert(agentActions).values({
+      conversationId,
+      type: "draft_failed",
+      input: { classification: classification.classification },
+      output: { detail, refusal: isRefusal },
+    });
+    await escalate(db, conversationId, `draft failed: ${detail}`, contact?.phone);
+    return { ran: true, classification: classification.classification, state: "ESCALATED", drafted: false, escalated: true };
+  }
+
+  if (!draft.ok) {
+    await db.insert(agentActions).values({
+      conversationId,
+      type: "draft_rejected_dollar_validation",
+      input: { classification: classification.classification, authorized: authorized.kind === "offer" ? authorized.cents : null },
+      output: { message: draft.message, disallowed: draft.validation.ok ? [] : draft.validation.disallowed },
+    });
+
+    // Two failures on a thread means something is wrong with the agent, not the
+    // seller — stop trying and get Marlon (§6).
+    if ((await dollarValidationFailures(db, conversationId)) >= 2) {
+      await escalate(db, conversationId, "agent produced unauthorized dollar amounts twice", contact?.phone);
+      await sendUrgentAlert(db, {
+        type: "guardrail_bug",
+        conversationId,
+        message: `⚠️ Agent failed dollar-validation twice on ${formatPhone(contact?.phone ?? "")}. Thread escalated.`,
+      });
+      return { ran: true, classification: classification.classification, state: "ESCALATED", drafted: false, escalated: true };
+    }
+    return { ran: true, classification: classification.classification, state: target, drafted: false, escalated: false };
+  }
+
+  // --- Pending draft card: nothing sends until Marlon approves ---
+  await db.insert(agentActions).values({
+    conversationId,
+    type: "draft_created",
+    input: {
+      classification: classification.classification,
+      state: target,
+      authorizedOfferCents: authorized.kind === "offer" ? authorized.cents : null,
+      isCeilingOffer: authorized.kind === "offer" && authorized.isCeiling,
+    },
+    output: { message: draft.message, notes: draft.notes, amounts: draft.validation.amounts },
+  });
+
+  return { ran: true, classification: classification.classification, state: target, drafted: true, escalated: false };
+}
+
+type Authorization =
+  | { kind: "none" }
+  | { kind: "offer"; cents: number; isCeiling: boolean }
+  | { kind: "ceiling_reached" };
+
+/**
+ * Whether this reply may carry a price, and if so exactly which one. Offers
+ * require a passing eligibility verdict and a campaign criteria set; the amount
+ * is always the next rung on the code-owned concession ladder.
+ */
+async function authorizeOffer(
+  db: Db,
+  dealId: string,
+  klass: InboundClass,
+  state: string,
+): Promise<Authorization> {
+  if (klass !== "asking_price" && klass !== "counter_offer") return { kind: "none" };
+
+  const deal = await db.query.deals.findFirst({ where: eq(deals.id, dealId) });
+  if (!deal || deal.verdict !== "pass") return { kind: "none" };
+
+  const campaign = deal.campaignId
+    ? await db.query.campaigns.findFirst({ where: eq(campaigns.id, deal.campaignId) })
+    : null;
+  const criteria = campaign?.criteriaId
+    ? await db.query.criteriaSets.findFirst({ where: eq(criteriaSets.id, campaign.criteriaId) })
+    : null;
+  if (!criteria) return { kind: "none" };
+
+  const oc: OfferCriteria = {
+    builderBuyPrice: toCents(criteria.builderBuyPrice),
+    minAssignmentFee: toCents(criteria.minAssignmentFee),
+    anchorPct: Number(criteria.anchorPct),
+    concessionSteps: Array.isArray(criteria.concessionSteps) ? (criteria.concessionSteps as number[]) : undefined,
+  };
+
+  // First price on a thread is the anchor; later ones step up the ladder.
+  const lastOffer = deal.lastOffer ? toCents(deal.lastOffer) : null;
+  const amount = lastOffer === null && state !== "NEGOTIATING" ? anchorOffer(oc) : nextAllowedOffer(oc, lastOffer);
+  if (amount === null) return { kind: "ceiling_reached" };
+
+  return { kind: "offer", cents: amount, isCeiling: amount === maxOffer(oc) };
+}
+
+async function escalate(db: Db, conversationId: string, reason: string, phone?: string | null) {
+  await db
+    .update(conversations)
+    .set({ state: "ESCALATED", escalated: true, escalationReason: reason, updatedAt: new Date() })
+    .where(eq(conversations.id, conversationId));
+  await db.insert(agentActions).values({
+    conversationId,
+    type: "escalated",
+    input: { reason },
+  });
+  await sendUrgentAlert(db, {
+    type: "escalation",
+    conversationId,
+    message: `🚨 Escalated${phone ? ` — ${formatPhone(phone)}` : ""}: ${reason}`,
+  });
+}
+
+/** Exported for the offer preview in the Deal Room. */
+export function describeOffer(cents: number): string {
+  return `$${fromCents(cents)}`;
+}

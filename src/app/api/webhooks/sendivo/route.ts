@@ -3,6 +3,7 @@ import { eq } from "drizzle-orm";
 import { getDb } from "@/db";
 import { agentActions, messages } from "@/db/schema";
 import { env } from "@/env";
+import { runAgentTurn } from "@/lib/agent/run";
 import { getContactByPhone } from "@/lib/sendivo/client";
 import { ingestInboundMessage, mapSendivoContact } from "@/lib/sendivo/ingest";
 import { classifyWebhook } from "@/lib/sendivo/webhook-schema";
@@ -51,6 +52,18 @@ export async function POST(req: NextRequest) {
           }
         },
       });
+
+      // Run the agent inline: it only ever produces a pending draft, and
+      // Sendivo's retry is bounded by our dedupe. Failures must not 500 the
+      // webhook — the message is already persisted either way.
+      if (result.outcome === "persisted" && !result.optedOut) {
+        try {
+          const agent = await runAgentTurn(db, result.conversationId);
+          return NextResponse.json({ ok: true, ...result, agent }, { status: 200 });
+        } catch (error) {
+          console.error("[sendivo-webhook] agent turn failed", error);
+        }
+      }
       return NextResponse.json({ ok: true, ...result }, { status: 200 });
     }
 

@@ -46,12 +46,33 @@ curl -s -X POST http://localhost:3000/api/webhooks/sendivo \
 | `npm run lint` / `typecheck` / `test` | CI trio (also run on GitHub Actions) |
 | `npm run db:generate` | Emit SQL migration from `src/db/schema.ts` |
 | `npm run db:migrate` / `db:push` / `db:studio` | Apply / sync / inspect (reads `.env.local`) |
+| `npm run seed:dev` | Dev fixtures: title company, builder, criteria set, live campaign |
+| `npm run test:e2e` | Playwright E2E against a real local database |
+
+Two suites are opt-in because they need live services:
+
+```bash
+RUN_DB=1 npx dotenv -e .env.local -- vitest run src/lib/agent
+```
+
+`RUN_LIVE=1` does the same for `verify-parcel.live.test.ts`, which hits the real county GIS, FEMA, and NWI endpoints.
+
+## The agent (M3)
+
+Copilot-only: every seller-facing message is approved by a human in the Deal Room composer. The guardrails live in code, not the prompt —
+
+- **Dollar validation** — any dollar figure in a draft must equal an amount code supplied; two violations on a thread escalate ([dollar-validation.ts](src/lib/agent/dollar-validation.ts))
+- **Escalation** — off-script, wrong-person, or low-confidence classifications never get a draft; they text Marlon instead
+- **Caps and locks** — 3 outbound/thread/day, one agent run per conversation, global kill switch on the campaigns page
+- **Opt-out + quiet hours** — enforced on *every* send, Marlon's included ([send.ts](src/lib/sendivo/send.ts))
+
+The LLM only classifies inbound messages and writes wording; offers come from the concession ladder in [offer-math.ts](src/lib/eligibility/offer-math.ts).
 
 ## Milestones
 
 - [x] **M0 — Skeleton + Sendivo ingest** (scaffold, auth, CI, Docker, schema, webhook → contacts/conversations/messages persisting) — *pending: webhook URL configured in Sendivo + real webhook shape confirmation, Vercel deploy, AI Responder disabled account-wide*
 - [x] **M1 — Eligibility + numbers** (county adapter registry with St. Lucie/Lee/Charlotte live, FEMA NFHL + NWI clients, offer math, `verifyParcel` persisting checks + optional Redis cache) — *pending: Marlon's unit tests on offer math + zone/wetland logic (working agreement §13)*
-- [ ] M2 — CRM core (Deal Room, Property Context Card, Seller 360, Pipeline)
-- [ ] M3 — Agent in copilot (state machine, guardrails, approval queue, urgent alerts)
+- [x] **M2 — CRM core** (Deal Room 3-pane, Property Context Card, Seller 360, Pipeline, campaign dashboard)
+- [x] **M3 — Agent in copilot** (state machine, classify + draft with dollar-validation, guardrails + kill switch, approval queue in the composer, edit-rate tracking, urgent SMS alerts) — *pending: `ANTHROPIC_API_KEY` and `MARLON_PHONE` so it can run live*
 - [ ] M4 — Contracts + routing + gating (SignWell, XCHECK, title email)
 - [ ] Ship Aug 31 — briefing cron, E2E, real seller thread in copilot

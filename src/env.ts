@@ -34,6 +34,8 @@ const envSchema = z.object({
   UPSTASH_REDIS_REST_TOKEN: z.string().optional(),
   SIGNWELL_API_KEY: z.string().optional(),
   ANTHROPIC_API_KEY: z.string().optional(),
+  /** Marlon's cell — destination for §11b alerts and the daily briefing. */
+  MARLON_PHONE: z.string().optional(),
 });
 
 export type Env = z.infer<typeof envSchema>;

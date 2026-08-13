@@ -2,7 +2,10 @@ import Link from "next/link";
 import { Badge } from "@/components/ui/badge";
 import { Composer } from "@/components/composer";
 import { ContextCard } from "@/components/context-card";
+import { DraftCard } from "@/components/draft-card";
 import { PollRefresh } from "@/components/poll-refresh";
+import { getDb } from "@/db";
+import { getPendingDraft } from "@/lib/agent/drafts";
 import { formatDateTime, formatPhone, timeAgo } from "@/lib/format";
 import { getConversationDetail, listConversations } from "@/lib/queries";
 
@@ -29,6 +32,7 @@ export default async function DealRoomPage({
     state: filter === "opted-out" ? "OPTED_OUT" : undefined,
   });
   const detail = selectedId ? await getConversationDetail(selectedId) : null;
+  const pendingDraft = selectedId ? await getPendingDraft(getDb(), selectedId) : null;
 
   return (
     <main className="grid h-[calc(100vh-49px)] grid-cols-[300px_1fr_340px]">
@@ -121,6 +125,7 @@ export default async function DealRoomPage({
                 </div>
               ))}
             </div>
+            {pendingDraft && <DraftCard conversationId={detail.conversation.id} draft={pendingDraft} />}
             <Composer
               conversationId={detail.conversation.id}
               disabled={detail.conversation.state === "OPTED_OUT" || detail.contact?.optedOut}
