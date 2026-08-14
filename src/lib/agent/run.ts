@@ -1,7 +1,7 @@
 import { desc, eq } from "drizzle-orm";
 import type { Db } from "@/db";
-import { agentActions, contacts, conversations, criteriaSets, deals, messages, parcels } from "@/db/schema";
-import { fromCents, toCents, type OfferCriteria } from "@/lib/eligibility/offer-math";
+import { agentActions, contacts, conversations, deals, messages, parcels } from "@/db/schema";
+import { fromCents, toCents } from "@/lib/eligibility/offer-math";
 import { sendUrgentAlert } from "@/lib/alerts";
 import { formatPhone } from "@/lib/format";
 import { AgentRefusal, hasAnthropicKey } from "./anthropic";

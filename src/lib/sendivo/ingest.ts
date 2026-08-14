@@ -46,7 +46,14 @@ export type IngestOptions = {
 };
 
 export type IngestResult =
-  | { outcome: "persisted"; contactId: string; conversationId: string; messageId: string; optedOut: boolean }
+  | {
+      outcome: "persisted";
+      contactId: string;
+      dealId: string;
+      conversationId: string;
+      messageId: string;
+      optedOut: boolean;
+    }
   | { outcome: "duplicate" };
 
 /**
@@ -184,6 +191,7 @@ export async function ingestInboundMessage(
     return {
       outcome: "persisted" as const,
       contactId: contact.id,
+      dealId: conversation.dealId,
       conversationId: conversation.id,
       messageId: message.id,
       optedOut,

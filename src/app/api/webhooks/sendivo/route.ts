@@ -4,6 +4,7 @@ import { getDb } from "@/db";
 import { agentActions, messages } from "@/db/schema";
 import { env } from "@/env";
 import { runAgentTurn } from "@/lib/agent/run";
+import { autoAttachFromList } from "@/lib/deals/attach-parcel";
 import { getContactByPhone } from "@/lib/sendivo/client";
 import { ingestInboundMessage, mapSendivoContact } from "@/lib/sendivo/ingest";
 import { classifyWebhook } from "@/lib/sendivo/webhook-schema";
@@ -65,12 +66,23 @@ export async function POST(req: NextRequest) {
       // Sendivo's retry is bounded by our dedupe. Failures must not 500 the
       // webhook — the message is already persisted either way.
       if (result.outcome === "persisted" && !result.optedOut) {
+        // Resolve the lot from the imported list first, so the agent's very
+        // first turn already knows whether a buyer wants this land. Without it
+        // the thread stalls until someone types a parcel id by hand.
+        let autoAttach: { attached: boolean; reason: string } | undefined;
+        try {
+          autoAttach = await autoAttachFromList(db, result.dealId, result.contactId, result.conversationId);
+        } catch (error) {
+          console.warn("[sendivo-webhook] parcel auto-attach failed", error);
+        }
+
         try {
           const agent = await runAgentTurn(db, result.conversationId);
-          return NextResponse.json({ ok: true, ...result, agent }, { status: 200 });
+          return NextResponse.json({ ok: true, ...result, autoAttach, agent }, { status: 200 });
         } catch (error) {
           console.error("[sendivo-webhook] agent turn failed", error);
         }
+        return NextResponse.json({ ok: true, ...result, autoAttach }, { status: 200 });
       }
       return NextResponse.json({ ok: true, ...result }, { status: 200 });
     }

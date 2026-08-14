@@ -76,13 +76,32 @@ export const charlotteAdapter: CountyAdapter = {
     return features.length ? mapCharlotteFeature(features[0]) : null;
   },
 
+  /**
+   * Charlotte splits the address: `propertyaddress` is the street name alone
+   * ("GULFSPRAY CIR") and only `FullPropertyAddress` carries the house number,
+   * space-padded between the two ("17200      GULFSPRAY CIR"). Searching the
+   * full string against either field therefore matches nothing — the padding
+   * defeats a LIKE, and the street-only field has no number to find.
+   *
+   * So we search the street name and return everything on it. The house number
+   * is matched exactly by the caller against `address`, which the mapper has
+   * already trimmed (see lib/lists/address.ts).
+   */
   async searchByAddress(query) {
+    const street = stripHouseNumber(query);
     const features = await arcgisQuery(LAYER_URL, {
-      where: `UPPER(propertyaddress) LIKE ${sqlQuote(`%${query.trim().toUpperCase()}%`)}`,
+      where: `UPPER(propertyaddress) LIKE ${sqlQuote(`%${street}%`)}`,
       outFields: OUT_FIELDS,
       returnGeometry: true,
-      resultRecordCount: 10,
+      // A Cape Coral / Port Charlotte street runs to hundreds of lots, and a
+      // truncated page could omit the one parcel we're looking for.
+      resultRecordCount: 500,
     });
     return features.map(mapCharlotteFeature);
   },
 };
+
+/** "17200 GULFSPRAY CIR" → "GULFSPRAY CIR". Leaves a query with no number alone. */
+function stripHouseNumber(query: string): string {
+  return query.trim().toUpperCase().replace(/^\d+[A-Z]?\s+/, "");
+}

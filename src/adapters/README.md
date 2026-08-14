@@ -15,6 +15,7 @@ title default row — nothing else changes (design doc §6).
 
 Notes:
 - Charlotte returns space-padded strings and stringified numbers; its adapter trims/parses everything and computes sqft from geometry (no stated-area field).
+- **Charlotte splits the address across two fields** (found Aug 14, 2026 while building list import): `propertyaddress` is the *street name only* — `"GULFSPRAY CIR"` — and only `FullPropertyAddress` carries the house number, space-padded between the two: `"17200      GULFSPRAY CIR"`. A `LIKE '%17200 GULFSPRAY CIR%'` therefore matches **neither** field, which silently made every address search return zero. Its `searchByAddress` now strips the leading house number, searches the street, and returns up to 500 rows; the caller exact-matches the house number against the trimmed `address` ([lib/lists/address.ts](../lib/lists/address.ts)). Lee and St. Lucie both store the full address in one field and need none of this.
 - A statewide fallback exists (`Florida_Statewide_Cadastral` FeatureServer, FDOR annual snapshot) — fast for `PARCEL_ID` lookups but stale for owners; county sources stay authoritative. DOR county numbers if ever needed: Charlotte 18, Lee 36, St. Lucie 66.
 - `hazards.fema.gov` has broken IPv6 — [instrumentation.ts](../instrumentation.ts) forces IPv4-first at server boot.
 

@@ -6,9 +6,8 @@ import { auth } from "@/auth";
 import { isCountyKey } from "@/adapters/registry";
 import { getDb } from "@/db";
 import { agentActions, deals, offers } from "@/db/schema";
-import { verifyParcel } from "@/lib/eligibility/verify-parcel";
+import { attachParcelToDeal } from "@/lib/deals/attach-parcel";
 import { fromCents } from "@/lib/eligibility/offer-math";
-import { bestMatch } from "@/lib/eligibility/match-builders";
 import { sendSellerMessage } from "@/lib/sendivo/send";
 import { sendUrgentAlert } from "@/lib/alerts";
 import { getPendingDraft, putsANewPriceOnTheTable, recordDraftResolution } from "@/lib/agent/drafts";
@@ -158,44 +157,15 @@ export async function attachParcelAction(dealId: string, county: string, parcelI
   if (!isCountyKey(county)) return { ok: false as const, reason: "unknown county" };
 
   const db = getDb();
-  const deal = await db.query.deals.findFirst({ where: eq(deals.id, dealId) });
-  if (!deal) return { ok: false as const, reason: "deal not found" };
-
-  const result = await verifyParcel(db, county, parcelId.trim(), deal.campaignId ?? null);
-  if (!result) return { ok: false as const, reason: `parcel not found in ${county} records` };
-
-  // The numbers follow whichever buyer the lot actually matched — max offer is
-  // that buyer's price minus their fee floor, not a campaign-wide constant.
-  const best = bestMatch(result.matches);
-  const numbers = best
-    ? {
-        matchedBuilderId: best.builderId,
-        maxOffer: fromCents(best.maxOfferCents),
-        anchor: fromCents(best.anchorCents),
-      }
-    : { matchedBuilderId: null };
-
-  await db
-    .update(deals)
-    .set({
-      parcelId: result.parcelRowId,
-      verdict: result.verdict,
-      // A passing verdict moves the deal forward on the pipeline, but never
-      // backwards from a stage it has already reached.
-      ...(result.verdict === "pass" && (deal.stage === "lead" || deal.stage === "qualifying")
-        ? { stage: "verified" as const }
-        : {}),
-      ...numbers,
-      updatedAt: new Date(),
-    })
-    .where(eq(deals.id, dealId));
+  const result = await attachParcelToDeal(db, dealId, county, parcelId);
+  if (!result.ok) return { ok: false as const, reason: result.reason };
 
   revalidatePath("/deal-room");
   revalidatePath("/pipeline");
   return {
     ok: true as const,
     verdict: result.verdict,
-    matchedBuilder: best?.builderName ?? null,
-    buyersConsidered: result.matches.length,
+    matchedBuilder: result.matchedBuilder,
+    buyersConsidered: result.buyersConsidered,
   };
 }

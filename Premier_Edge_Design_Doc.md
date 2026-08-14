@@ -188,6 +188,22 @@ Every decision derives from elapsed time, so the endpoint is idempotent at any c
 
 ---
 
+## 11d. List ingestion & pre-qualification — DOC AMENDMENT (Aug 14 2026)
+
+The original flow was **inbound-first**: blast the list from Sendivo, and learn about a lot only once its owner replied and Marlon typed the parcel id in by hand. That inverts the economics. A 7,325-contact Cape Coral list contains lots that are wetlands, AE zone, or under the size floor — we were paying to text every one of those owners, then spending attention qualifying replies that were dead before they arrived.
+
+**Premier Edge now owns the list, and due diligence runs before the blast, not after the reply.**
+
+- **Source.** Sendivo's API cannot list or page contacts (`GET /contacts` requires `phone_number` — verified live Aug 14 2026), so the list can't be pulled back out of it. The input is the same CSV that gets uploaded there. Headers are matched by alias, not position, because every provider names them differently; unrecognized columns are reported, kept in `sendivo_raw`, and never silently dropped.
+- **Resolution.** A row with an APN is trusted. A row with only an address goes to the county adapter and must match **exactly** after USPS normalization. Near-misses and split lots go to an unresolved queue instead of being guessed — attaching the wrong parcel would run flood, wetlands, and a price against land the seller doesn't own, and every downstream check would pass on the wrong lot.
+- **Storage.** `contact_parcels` finally carries its weight: it is the many-to-many that lets one seller own several lots, and it is what an inbound reply uses to find its own land.
+- **Pre-qualification.** Every resolved lot is scored against the campaign's buy boxes. Passing lots become the blast list; failing lots stay in the land bank with their findings attached, which is the §10 amendment working as intended — the list *is* the inventory.
+- **Auto-attach.** On first inbound, a deal with no parcel resolves itself from `contact_parcels` when the contact owns **exactly one** lot. More than one stays manual: "are you interested in selling?" doesn't say which lot, and picking for them would price the wrong land. Both outcomes are written to `agent_actions`, since this sets the deal's money.
+
+Entry point: `scripts/import-list.ts`. Emits `<list>.blast-ready.csv` (upload that to Sendivo) and `<list>.unresolved.csv` (needs a parcel id by hand).
+
+**Known limit:** fit is per-campaign buy box and isn't persisted per parcel, so the blast-ready set comes from the run that scored it. A `parcel_campaign_verdicts` table would make it queryable after the fact.
+
 ## 12. Milestones — ships Sun Aug 31 (8–10 hr days; CRM before agent, because the approval queue lives inside the Deal Room)
 
 | Milestone | Dates | Definition of done |
