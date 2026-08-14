@@ -1,19 +1,14 @@
 import { desc, eq } from "drizzle-orm";
 import type { Db } from "@/db";
 import { agentActions, contacts, conversations, criteriaSets, deals, messages, parcels } from "@/db/schema";
-import {
-  anchorOffer,
-  fromCents,
-  maxOffer,
-  nextAllowedOffer,
-  toCents,
-  type OfferCriteria,
-} from "@/lib/eligibility/offer-math";
+import { fromCents, toCents, type OfferCriteria } from "@/lib/eligibility/offer-math";
 import { sendUrgentAlert } from "@/lib/alerts";
 import { formatPhone } from "@/lib/format";
 import { AgentRefusal, hasAnthropicKey } from "./anthropic";
 import { classifyInbound } from "./classify";
 import { draftReply } from "./draft";
+import { decideOffer, type OfferDecision } from "./negotiation";
+import { loadOfferCriteria, probesSent } from "./thread-state";
 import {
   acquireRunLock,
   dollarValidationFailures,
@@ -121,12 +116,22 @@ async function runTurnInner(db: Db, conversationId: string): Promise<AgentRunOut
     .set({ state: mustEscalate ? "ESCALATED" : target, updatedAt: new Date() })
     .where(eq(conversations.id, conversationId));
 
+  // The freshest number the seller has named — this message's if they just gave
+  // one, otherwise whatever they said before. Read from the classification
+  // rather than re-reading the deal: the row we loaded predates this update, and
+  // a stale ask is how the agent ends up unable to echo the price they just sent.
   if (classification.seller_counter_amount != null) {
     await db
       .update(deals)
       .set({ sellerCounter: classification.seller_counter_amount.toFixed(2), updatedAt: new Date() })
       .where(eq(deals.id, deal.id));
   }
+  const sellerAskCents =
+    classification.seller_counter_amount != null
+      ? toCents(classification.seller_counter_amount)
+      : deal.sellerCounter
+        ? toCents(deal.sellerCounter)
+        : null;
 
   if (mustEscalate) {
     const why = lowConfidence
@@ -176,11 +181,12 @@ async function runTurnInner(db: Db, conversationId: string): Promise<AgentRunOut
   }
 
   // --- Code decides the money, if any ---
-  const authorized = await authorizeOffer(db, deal.id, classification.classification, target);
-  if (authorized.kind === "ceiling_reached") {
+  const decision = await decideMove(db, deal.id, conversationId, classification.classification, sellerAskCents);
+  if (decision.kind === "ceiling_reached") {
     await escalate(db, conversationId, "ceiling reached — no room left on the concession ladder", contact?.phone);
     return { ran: true, classification: classification.classification, state: "ESCALATED", drafted: false, escalated: true };
   }
+  const authorizedCents = decision.kind === "offer" ? decision.cents : null;
 
   const parcel = deal.parcelId ? await db.query.parcels.findFirst({ where: eq(parcels.id, deal.parcelId) }) : null;
 
@@ -190,11 +196,13 @@ async function runTurnInner(db: Db, conversationId: string): Promise<AgentRunOut
     draft = await draftReply({
       classification: classification.classification,
       conversationState: target,
+      intent: decision.intent,
       sellerName: contact?.name,
       parcelAddress: parcel?.address,
       county: parcel?.county,
-      authorizedOfferCents: authorized.kind === "offer" ? authorized.cents : null,
-      sellerCounterCents: deal.sellerCounter ? toCents(deal.sellerCounter) : null,
+      authorizedOfferCents: authorizedCents,
+      sellerCounterCents: sellerAskCents,
+      meetsSellerAsk: decision.kind === "offer" && decision.meetsSellerAsk,
       recentThread: ordered.map((m) => ({ direction: m.direction, body: m.body })),
     });
   } catch (error) {
@@ -214,7 +222,7 @@ async function runTurnInner(db: Db, conversationId: string): Promise<AgentRunOut
     await db.insert(agentActions).values({
       conversationId,
       type: "draft_rejected_dollar_validation",
-      input: { classification: classification.classification, authorized: authorized.kind === "offer" ? authorized.cents : null },
+      input: { classification: classification.classification, intent: decision.intent, authorized: authorizedCents },
       output: { message: draft.message, disallowed: draft.validation.ok ? [] : draft.validation.disallowed },
     });
 
@@ -239,8 +247,10 @@ async function runTurnInner(db: Db, conversationId: string): Promise<AgentRunOut
     input: {
       classification: classification.classification,
       state: target,
-      authorizedOfferCents: authorized.kind === "offer" ? authorized.cents : null,
-      isCeilingOffer: authorized.kind === "offer" && authorized.isCeiling,
+      intent: decision.intent,
+      authorizedOfferCents: authorizedCents,
+      isCeilingOffer: decision.kind === "offer" && decision.isCeiling,
+      meetsSellerAsk: decision.kind === "offer" && decision.meetsSellerAsk,
     },
     output: { message: draft.message, notes: draft.notes, amounts: draft.validation.amounts },
   });
@@ -248,49 +258,30 @@ async function runTurnInner(db: Db, conversationId: string): Promise<AgentRunOut
   return { ran: true, classification: classification.classification, state: target, drafted: true, escalated: false };
 }
 
-type Authorization =
-  | { kind: "none" }
-  | { kind: "offer"; cents: number; isCeiling: boolean }
-  | { kind: "ceiling_reached" };
-
 /**
- * Whether this reply may carry a price, and if so exactly which one. Offers
- * require a passing eligibility verdict and a campaign criteria set; the amount
- * is always the next rung on the code-owned concession ladder.
+ * Load what the negotiation policy needs and let it decide the move: say
+ * nothing about money, ask the seller for their number, or name a specific
+ * price. Every dollar figure still comes from offer-math (§6) — this only picks
+ * *whether* and *when*.
  */
-async function authorizeOffer(
+async function decideMove(
   db: Db,
   dealId: string,
+  conversationId: string,
   klass: InboundClass,
-  state: string,
-): Promise<Authorization> {
-  if (klass !== "asking_price" && klass !== "counter_offer") return { kind: "none" };
-
+  sellerAskCents: number | null,
+): Promise<OfferDecision> {
   const deal = await db.query.deals.findFirst({ where: eq(deals.id, dealId) });
-  // The due-diligence gate: no price until a verified parcel has a buyer whose
-  // criteria it satisfies. Anything less and we'd be negotiating on a lot we
-  // can't actually sell.
-  if (!deal || deal.verdict !== "pass" || !deal.matchedBuilderId) return { kind: "none" };
+  const criteria = await loadOfferCriteria(db, deal);
+  const probes = criteria ? await probesSent(db, conversationId) : 0;
 
-  // Price comes from the buyer this lot was matched to, not a campaign default.
-  const criteria = await db.query.criteriaSets.findFirst({
-    where: eq(criteriaSets.builderId, deal.matchedBuilderId),
+  return decideOffer({
+    klass,
+    criteria,
+    lastOfferCents: deal?.lastOffer ? toCents(deal.lastOffer) : null,
+    sellerAskCents,
+    probesSoFar: probes,
   });
-  if (!criteria) return { kind: "none" };
-
-  const oc: OfferCriteria = {
-    builderBuyPrice: toCents(criteria.builderBuyPrice),
-    minAssignmentFee: toCents(criteria.minAssignmentFee),
-    anchorPct: Number(criteria.anchorPct),
-    concessionSteps: Array.isArray(criteria.concessionSteps) ? (criteria.concessionSteps as number[]) : undefined,
-  };
-
-  // First price on a thread is the anchor; later ones step up the ladder.
-  const lastOffer = deal.lastOffer ? toCents(deal.lastOffer) : null;
-  const amount = lastOffer === null && state !== "NEGOTIATING" ? anchorOffer(oc) : nextAllowedOffer(oc, lastOffer);
-  if (amount === null) return { kind: "ceiling_reached" };
-
-  return { kind: "offer", cents: amount, isCeiling: amount === maxOffer(oc) };
 }
 
 async function escalate(db: Db, conversationId: string, reason: string, phone?: string | null) {

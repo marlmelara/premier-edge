@@ -38,6 +38,20 @@ Three panes:
   - Owner-match status (XCHECK score), contract status chips (PSA/assignment), quick links: county appraiser page, FEMA MSC, NWI mapper pre-centered on the parcel
 - The same context card component renders anywhere a conversation appears — Deal Room, Seller 360, approval queue — one component, one truth.
 
+### 2.1a Negotiation policy — DOC AMENDMENT (Marlon, Aug 14 2026)
+The original doc specified *which* number (max → anchor → ladder) but never *when*. This is the sequence, and it is code-owned like every other money decision (§6):
+
+1. **The opener never carries a price.** We ask whether they'd sell. They say yes, no, insult us, or name a number.
+2. **Ask before we tell.** When they engage without naming a price, the agent asks what they want for it — up to twice (`MAX_PROBES`). Rationale, verbatim: *"if we start the offer at 100k but they only wanted 80k, then we are shooting ourselves in the foot."*
+3. **If they won't budge and want our number, we open at the anchor** (`anchor_pct` × max offer, default .78 — "something respectable").
+4. **Their number caps ours.** Every offer is `min(ladder rung, seller's stated price)`, floored at whatever we already put in writing so we never retrade ourselves. An outrageous asking price is answered cordially at our rung, never argued with.
+5. **Silence gets chased, not abandoned.** ~4h after an unanswered offer: a check-in restating the *same* number. ~48h after that: *"we spoke with our partners"* and a raise to the next rung (default .9 × max). Then we stop — a third unanswered chase is harassment.
+6. **A counter above our rung walks up the ladder**, ending at max offer. The ceiling rung is flagged and never auto-sends.
+
+Everything above produces *drafts*. Copilot rules are unchanged: nothing reaches a seller without approval in the Deal Room.
+
+Consequences: `concession_steps` changes meaning (§5); the follow-up sweep is a new scheduled job (§11c).
+
 ### 2.2 Seller 360
 One page per contact: identity (name/phone/email, Sendivo enrichment merged with ours), every conversation across campaigns, every linked parcel with mini eligibility badges, offer history (immutable snapshots), contracts, full `agent_actions` timeline, labels/stage. Answers "have we ever talked to this person, about what land, and how did it end."
 
@@ -115,7 +129,11 @@ Money `numeric(12,2)`, IDs `uuid`, all tables timestamped. (Δ = changed/new for
   criteria_sets  id, min_sqft, allowed_flood_zones text[] (default ['X']),
                  wetlands_allowed bool (default false), builder_buy_price,
                  min_assignment_fee, max_offer GENERATED, anchor_pct (default .78),
-                 concession_steps jsonb
+                 concession_steps jsonb  -- AMENDED Aug 14 2026: fractions of
+                 -- MAX OFFER (default [.9, 1]), not of the anchor→max gap.
+                 -- Same unit as anchor_pct, so the ladder reads in one scale:
+                 -- .78 → .9 → 1.0. Marlon reasons in ".9 of our max"; the gap
+                 -- form silently drifts when anchor_pct changes.
   conversations  id, deal_id FK, sendivo_conversation_id, state (§7),
                  owned_by_edge bool, last_inbound_at, last_outbound_at,
                  escalated bool, escalation_reason
@@ -161,6 +179,12 @@ Unchanged from the previous revision in substance; restated deltas only:
 - County adapter or Sendivo webhook hard-failing (system health)
 
 **Anti-spam rules (code):** severity tiers — `urgent` sends instantly; `info` (e.g. individual new replies) never texts, it waits for the briefing. Per-type throttle (same alert type max 1/15min, coalesced: "3 new escalations"). Alerts always send regardless of hour — they're Marlon's own business events, not seller-facing marketing (quiet-hours rules protect sellers, not the owner). Every alert logged to `agent_actions`.
+
+## 11c. Follow-up sweep — DOC AMENDMENT (Aug 14 2026)
+
+`GET /api/cron/followups`, bearer-authed with `CRON_SECRET` like the briefing. Scans open threads with a standing offer and drafts the §2.1a chase moves (nudge, then partner raise). Drafts only — same copilot rules, same guardrails (kill switch, thread cap, opt-out, and no stacking a second card on a thread that already has one pending).
+
+Every decision derives from elapsed time, so the endpoint is idempotent at any cadence. **Constraint:** Vercel Hobby caps crons at once per day and rejects sub-daily expressions at deploy time, so `vercel.json` runs it at 13:00 UTC and a GitHub Actions schedule pings it hourly through the seller-facing day. Moving to Vercel Pro makes the Actions workflow deletable.
 
 ---
 

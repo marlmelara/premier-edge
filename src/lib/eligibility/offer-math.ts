@@ -30,13 +30,16 @@ export type OfferCriteria = {
   /** Anchor as a fraction of max offer (criteria_sets.anchor_pct, default 0.78). */
   anchorPct: number;
   /**
-   * Concession ladder as fractions of the anchor→max gap, ascending, each in
-   * (0, 1]. The last rung lands exactly on maxOffer. Default [0.4, 0.7, 1].
+   * Concession ladder as fractions of **max offer**, ascending, each in
+   * (0, 1] — the same unit as anchorPct, so the whole ladder reads in one
+   * scale: 0.78 anchor → 0.9 → 1.0 ceiling. Steps at or below the anchor are
+   * dropped, and the ladder always ends exactly on maxOffer.
+   * Default [0.9, 1].
    */
   concessionSteps?: number[];
 };
 
-const DEFAULT_CONCESSION_STEPS = [0.4, 0.7, 1];
+const DEFAULT_CONCESSION_STEPS = [0.9, 1];
 const ROUND_TO = 100 * 100; // offers round to whole $100s — sellers never see $14,287.53
 
 const roundDownTo = (cents: Cents, step: number) => Math.floor(cents / step) * step;
@@ -48,26 +51,25 @@ export function maxOffer(c: OfferCriteria): Cents {
   return value;
 }
 
-/** Start-at price: anchorPct of max, rounded down to $100. */
+/** Start-at price: anchorPct of max, rounded down to $100, never above the ceiling. */
 export function anchorOffer(c: OfferCriteria): Cents {
-  return roundDownTo(maxOffer(c) * c.anchorPct, ROUND_TO);
+  const max = maxOffer(c);
+  return Math.min(roundDownTo(max * c.anchorPct, ROUND_TO), max);
 }
 
 /**
- * Every offer amount the agent is ever allowed to send, ascending:
- * anchor first, then anchor + gap×step (rounded down to $100), deduped,
+ * Every offer amount the agent is ever allowed to send, ascending: the anchor,
+ * then each concession step as a fraction of max (rounded down to $100),
  * ending exactly at maxOffer.
  */
 export function concessionLadder(c: OfferCriteria): Cents[] {
   const max = maxOffer(c);
-  const anchor = anchorOffer(c);
-  const gap = max - anchor;
   const steps = c.concessionSteps?.length ? c.concessionSteps : DEFAULT_CONCESSION_STEPS;
 
-  const ladder = [anchor];
+  const ladder = [anchorOffer(c)];
   for (const step of steps) {
-    const rung = step >= 1 ? max : roundDownTo(anchor + gap * step, ROUND_TO);
-    if (rung > ladder[ladder.length - 1]) ladder.push(rung);
+    const rung = step >= 1 ? max : roundDownTo(max * step, ROUND_TO);
+    if (rung > ladder[ladder.length - 1] && rung <= max) ladder.push(rung);
   }
   if (ladder[ladder.length - 1] !== max) ladder.push(max);
   return ladder;
@@ -80,12 +82,39 @@ export function nextAllowedOffer(c: OfferCriteria, lastOffer: Cents | null): Cen
   return ladder.find((rung) => rung > lastOffer) ?? null;
 }
 
+/**
+ * The amount we may actually put in front of *this* seller: the next rung on
+ * the ladder, but never above a price the seller has already named.
+ *
+ * Without the cap, a seller who says "I'd take 80k" gets answered with our
+ * 101.4k anchor and we hand them $21,400 they never asked for. The ladder sets
+ * the ceiling for the negotiation; their own number sets the ceiling for this
+ * message.
+ *
+ * @param sellerAsk what the seller said they want, in cents, or null if they
+ *        haven't named a number yet.
+ */
+export function offerFor(c: OfferCriteria, lastOffer: Cents | null, sellerAsk: Cents | null): Cents | null {
+  const rung = nextAllowedOffer(c, lastOffer);
+  if (rung === null) return null;
+  if (sellerAsk === null || sellerAsk >= rung) return rung;
+  // They want less than our next rung. Meet their number — but never go below
+  // what we already put in writing, which would be a retrade.
+  return lastOffer === null ? sellerAsk : Math.max(sellerAsk, lastOffer);
+}
+
 /** Negotiation room between the last offer (or anchor) and the ceiling — computed, never typed (§2.1). */
 export function roomLeft(c: OfferCriteria, lastOffer: Cents | null): Cents {
   return maxOffer(c) - (lastOffer ?? anchorOffer(c));
 }
 
-/** Dollar-validation primitive (M3): a drafted amount must sit on the ladder. */
-export function isAllowedOfferAmount(c: OfferCriteria, amount: Cents): boolean {
-  return concessionLadder(c).includes(amount);
+/**
+ * Dollar-validation primitive (M3): an amount is sendable if it sits on the
+ * ladder, or if it's a seller's own asking price we're meeting under the
+ * ceiling. Never above maxOffer, whatever the seller said.
+ */
+export function isAllowedOfferAmount(c: OfferCriteria, amount: Cents, sellerAsk: Cents | null = null): boolean {
+  if (amount > maxOffer(c)) return false;
+  if (concessionLadder(c).includes(amount)) return true;
+  return sellerAsk !== null && amount === sellerAsk;
 }

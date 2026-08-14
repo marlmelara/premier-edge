@@ -1,0 +1,43 @@
+# Same-day follow-up pings.
+#
+# The sweep endpoint is idempotent and time-driven, so calling it often is
+# harmless — but Vercel's Hobby plan caps crons at once per day, which turns the
+# "check in a few hours later" nudge into "check in tomorrow morning". This
+# workflow closes that gap for free: it hits the same endpoint hourly through
+# the seller-facing day (8am–9pm ET), and vercel.json keeps the daily run as a
+# backstop.
+#
+# Setup — two repo secrets under Settings → Secrets and variables → Actions:
+#   PREMIER_EDGE_URL   https://premier-edge-theta.vercel.app
+#   CRON_SECRET        the same value as the Vercel production env var
+#
+# Delete this file if the account moves to Vercel Pro; a per-minute cron there
+# does the same job without GitHub in the path. Note that GitHub disables
+# scheduled workflows on repos with no activity for 60 days.
+
+name: Follow-up sweep
+
+on:
+  schedule:
+    - cron: "0 12-23,0-1 * * *"
+  workflow_dispatch:
+
+jobs:
+  sweep:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Draft due follow-ups
+        run: |
+          if [ -z "${{ secrets.PREMIER_EDGE_URL }}" ]; then
+            echo "PREMIER_EDGE_URL secret is not set — nothing to call."
+            exit 1
+          fi
+          response=$(curl -sS -w "\n%{http_code}" \
+            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+            "${{ secrets.PREMIER_EDGE_URL }}/api/cron/followups")
+          status=$(echo "$response" | tail -n1)
+          body=$(echo "$response" | sed '$d')
+          echo "$body"
+          # A non-200 means the sweep did not run; fail loudly so it shows up in
+          # the Actions tab rather than silently skipping a day of follow-ups.
+          [ "$status" = "200" ] || { echo "HTTP $status"; exit 1; }

@@ -9,6 +9,19 @@ import type { PendingDraft } from "@/lib/agent/drafts";
 import { formatMoney } from "@/lib/format";
 
 /**
+ * What kind of move this card represents, in Marlon's words. A "we spoke with
+ * our partners" raise showing up unannounced is confusing — the badge says why
+ * the agent wrote what it wrote before he reads the message.
+ */
+const INTENT_LABEL: Record<PendingDraft["intent"], string | null> = {
+  reply: null,
+  probe: "asking their price first",
+  offer: null,
+  nudge: "same-day check-in · no new money",
+  partner_bump: "partner raise · new number",
+};
+
+/**
  * The approval queue, rendered inline in the composer (design doc §2.1).
  * Nothing the agent writes reaches a seller without passing through here.
  */
@@ -35,10 +48,17 @@ export function DraftCard({ conversationId, draft }: { conversationId: string; d
         <Badge variant="outline" className="border-amber-700 text-[10px] text-amber-300">
           AGENT DRAFT · needs approval
         </Badge>
-        <span className="text-[11px] text-muted-foreground">{draft.classification.replace(/_/g, " ")}</span>
+        <span className="text-[11px] text-muted-foreground">
+          {INTENT_LABEL[draft.intent] ?? draft.classification.replace(/_/g, " ")}
+        </span>
         {draft.authorizedOfferCents != null && (
           <Badge variant="outline" className="text-[10px]">
-            offer {formatMoney(draft.authorizedOfferCents / 100)}
+            {draft.intent === "nudge" ? "restates" : "offer"} {formatMoney(draft.authorizedOfferCents / 100)}
+          </Badge>
+        )}
+        {draft.meetsSellerAsk && (
+          <Badge variant="outline" className="border-emerald-700 text-[10px] text-emerald-300">
+            their number
           </Badge>
         )}
         {draft.isCeilingOffer && (

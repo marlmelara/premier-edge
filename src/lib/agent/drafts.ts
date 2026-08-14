@@ -1,6 +1,7 @@
 import { and, desc, eq, sql } from "drizzle-orm";
 import type { Db } from "@/db";
 import { agentActions } from "@/db/schema";
+import type { DraftIntent } from "./negotiation";
 
 /**
  * Pending agent drafts live in `agent_actions` as `draft_created` rows — the
@@ -14,8 +15,12 @@ export type PendingDraft = {
   message: string;
   notes: string;
   classification: string;
+  /** What this message was for — see negotiation.ts. Older rows have none. */
+  intent: DraftIntent;
   authorizedOfferCents: number | null;
   isCeilingOffer: boolean;
+  /** The authorized amount is the seller's own asking price, not a counter. */
+  meetsSellerAsk: boolean;
   createdAt: Date;
 };
 
@@ -42,8 +47,10 @@ export async function getPendingDraft(db: Db, conversationId: string): Promise<P
   const output = (row.output ?? {}) as { message?: string; notes?: string };
   const input = (row.input ?? {}) as {
     classification?: string;
+    intent?: string;
     authorizedOfferCents?: number | null;
     isCeilingOffer?: boolean;
+    meetsSellerAsk?: boolean;
   };
   if (!output.message) return null;
 
@@ -52,10 +59,29 @@ export async function getPendingDraft(db: Db, conversationId: string): Promise<P
     message: output.message,
     notes: output.notes ?? "",
     classification: input.classification ?? "unknown",
+    // Rows written before intents existed carried an amount iff they were an
+    // offer, so that's how they're read back.
+    intent: isDraftIntent(input.intent) ? input.intent : input.authorizedOfferCents != null ? "offer" : "reply",
     authorizedOfferCents: input.authorizedOfferCents ?? null,
     isCeilingOffer: Boolean(input.isCeilingOffer),
+    meetsSellerAsk: Boolean(input.meetsSellerAsk),
     createdAt: row.createdAt,
   };
+}
+
+const DRAFT_INTENTS: DraftIntent[] = ["reply", "probe", "offer", "nudge", "partner_bump"];
+
+function isDraftIntent(value: unknown): value is DraftIntent {
+  return typeof value === "string" && (DRAFT_INTENTS as string[]).includes(value);
+}
+
+/**
+ * Whether approving this draft should write a new offer row. A nudge restates
+ * a price we already recorded — recording it again would stack duplicate offer
+ * versions at the same amount.
+ */
+export function putsANewPriceOnTheTable(draft: PendingDraft): boolean {
+  return draft.authorizedOfferCents != null && (draft.intent === "offer" || draft.intent === "partner_bump");
 }
 
 /** Append the resolution row. Approve/edit are distinguished for edit-rate tracking (§12). */

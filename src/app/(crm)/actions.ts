@@ -11,7 +11,7 @@ import { fromCents } from "@/lib/eligibility/offer-math";
 import { bestMatch } from "@/lib/eligibility/match-builders";
 import { sendSellerMessage } from "@/lib/sendivo/send";
 import { sendUrgentAlert } from "@/lib/alerts";
-import { getPendingDraft, recordDraftResolution } from "@/lib/agent/drafts";
+import { getPendingDraft, putsANewPriceOnTheTable, recordDraftResolution } from "@/lib/agent/drafts";
 import { setKillSwitch } from "@/lib/agent/guardrails";
 import { formatMoney } from "@/lib/format";
 
@@ -81,21 +81,24 @@ export async function resolveDraftAction(
   // The SMS is already gone, so a failure here must be loud, never silent: an
   // unrecorded offer makes the next turn re-offer the anchor to a seller who
   // has already been quoted.
-  if (pending.authorizedOfferCents != null) {
+  // A nudge restates a price already on record, so only a genuinely new number
+  // becomes an offer row.
+  const newPriceCents = putsANewPriceOnTheTable(pending) ? pending.authorizedOfferCents! : null;
+  if (newPriceCents != null) {
     try {
-      await recordOffer(db, conversationId, pending.authorizedOfferCents);
+      await recordOffer(db, conversationId, newPriceCents);
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
       await db.insert(agentActions).values({
         conversationId,
         type: "offer_record_failed",
-        input: { amountCents: pending.authorizedOfferCents },
+        input: { amountCents: newPriceCents },
         output: { detail },
       });
       await sendUrgentAlert(db, {
         type: "guardrail_bug",
         conversationId,
-        message: `⚠️ Offer ${formatMoney(pending.authorizedOfferCents / 100)} was SENT but not recorded: ${detail}. Set the last offer by hand before the agent replies again.`,
+        message: `⚠️ Offer ${formatMoney(newPriceCents / 100)} was SENT but not recorded: ${detail}. Set the last offer by hand before the agent replies again.`,
       });
       return { ok: false as const, reason: `sent, but the offer failed to record: ${detail}` };
     }
