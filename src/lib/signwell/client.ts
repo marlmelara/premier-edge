@@ -60,8 +60,12 @@ export const signWellDocument = z
 export type SignWellDocument = z.infer<typeof signWellDocument>;
 
 export type TemplateRecipient = {
-  /** Matches the template's placeholder/recipient id (SignWell calls it `id`). */
-  id: string;
+  /**
+   * The template placeholder this person fills, matched by name ("Seller",
+   * "Buyer"). Names are stable across template edits; the numeric placeholder
+   * ids are positional and shift when roles are reordered.
+   */
+  placeholderName: string;
   name: string;
   email: string;
   sendEmail?: boolean;
@@ -93,7 +97,7 @@ export function createDocumentFromTemplate(params: {
       test_mode: params.testMode ?? false,
       apply_signing_order: false,
       recipients: params.recipients.map((r) => ({
-        id: r.id,
+        placeholder_name: r.placeholderName,
         name: r.name,
         email: r.email,
         send_email: r.sendEmail ?? true,

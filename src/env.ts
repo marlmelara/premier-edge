@@ -38,9 +38,14 @@ const envSchema = z.object({
   /** Webhook secret id — also the HMAC key SignWell signs events with. */
   SIGNWELL_WEBHOOK_ID: z.string().optional(),
   SIGNWELL_PSA_TEMPLATE_ID: z.string().optional(),
+  /** Template placeholder names — matched by name, not positional id. */
   SIGNWELL_PSA_SELLER_ROLE: z.string().optional(),
+  SIGNWELL_PSA_BUYER_ROLE: z.string().optional(),
   SIGNWELL_ASSIGNMENT_TEMPLATE_ID: z.string().optional(),
   SIGNWELL_ASSIGNMENT_BUYER_ROLE: z.string().optional(),
+  SIGNWELL_ASSIGNMENT_ASSIGNOR_ROLE: z.string().optional(),
+  /** The entity that signs as buyer/assignor on our side. */
+  BUYER_ENTITY_NAME: z.string().optional(),
   SIGNWELL_TEST_MODE: z.string().optional(),
   /** Title-company email delivery. */
   RESEND_API_KEY: z.string().optional(),

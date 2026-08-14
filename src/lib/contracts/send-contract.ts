@@ -3,7 +3,8 @@ import type { Db } from "@/db";
 import { agentActions, builders, contacts, contracts, deals, offers, parcels } from "@/db/schema";
 import { env } from "@/env";
 import { sendUrgentAlert } from "@/lib/alerts";
-import { createDocumentFromTemplate, SignWellError } from "@/lib/signwell/client";
+import { createDocumentFromTemplate, SignWellError, type TemplateRecipient } from "@/lib/signwell/client";
+import { ASSIGNMENT_FIELD_MAP, checkFieldMap, PSA_FIELD_MAP, toTemplateFields } from "@/lib/signwell/field-map";
 import { formatMoney } from "@/lib/format";
 import { crossCheckOwner } from "./owner-xcheck";
 
@@ -19,15 +20,13 @@ export type SendContractResult =
   | { ok: true; contractId: string; signwellDocumentId: string; sentForSignature: boolean; xcheckReason: string }
   | { ok: false; reason: string };
 
-function templateFor(kind: "psa" | "assignment"): { templateId?: string; recipientRole: string } {
+function templateIdFor(kind: "psa" | "assignment"): string | undefined {
   const e = env();
-  return kind === "psa"
-    ? { templateId: e.SIGNWELL_PSA_TEMPLATE_ID, recipientRole: e.SIGNWELL_PSA_SELLER_ROLE ?? "Seller" }
-    : { templateId: e.SIGNWELL_ASSIGNMENT_TEMPLATE_ID, recipientRole: e.SIGNWELL_ASSIGNMENT_BUYER_ROLE ?? "Assignee" };
+  return kind === "psa" ? e.SIGNWELL_PSA_TEMPLATE_ID : e.SIGNWELL_ASSIGNMENT_TEMPLATE_ID;
 }
 
 export async function sendContract(db: Db, dealId: string, kind: "psa" | "assignment"): Promise<SendContractResult> {
-  const { templateId, recipientRole } = templateFor(kind);
+  const templateId = templateIdFor(kind);
   if (!templateId) return { ok: false, reason: `SignWell ${kind.toUpperCase()} template id not configured` };
 
   const deal = await db.query.deals.findFirst({ where: eq(deals.id, dealId) });
@@ -52,14 +51,30 @@ export async function sendContract(db: Db, dealId: string, kind: "psa" | "assign
 
   const xcheck = crossCheckOwner(contact.name, parcel.ownerNameRaw);
 
-  // Recipient differs by contract: the PSA is signed by the seller, the
-  // assignment by the builder taking it over.
-  let recipientName: string;
-  let recipientEmail: string;
+  // Refuse rather than send a contract with unmapped fields — a blank or
+  // mis-filled price on a binding agreement is worse than not sending.
+  const fieldMap = kind === "psa" ? PSA_FIELD_MAP : ASSIGNMENT_FIELD_MAP;
+  const mapCheck = checkFieldMap(fieldMap);
+  if (!mapCheck.ready) {
+    return {
+      ok: false,
+      reason: `SignWell ${kind.toUpperCase()} template fields are not mapped yet (${mapCheck.missing.join(", ")}). See src/lib/signwell/field-map.ts.`,
+    };
+  }
+
+  const buyerEntity = env().BUYER_ENTITY_NAME ?? "Premier Equity Co. LLC";
+  const buyerEmail = env().MARLON_EMAIL;
+
+  // The PSA is signed by both sides — the seller and us. The assignment is
+  // signed by us and the builder taking it over.
+  const recipients: TemplateRecipient[] = [];
   if (kind === "psa") {
     if (!contact.email) return { ok: false, reason: "seller has no email address for e-signature" };
-    recipientName = contact.name ?? "Seller";
-    recipientEmail = contact.email;
+    if (!buyerEmail) return { ok: false, reason: "MARLON_EMAIL not set — the buyer has no signer address" };
+    recipients.push(
+      { placeholderName: env().SIGNWELL_PSA_SELLER_ROLE ?? "Seller", name: contact.name ?? "Seller", email: contact.email },
+      { placeholderName: env().SIGNWELL_PSA_BUYER_ROLE ?? "Buyer", name: buyerEntity, email: buyerEmail },
+    );
   } else {
     const builder = deal.campaignId
       ? await db.query.campaigns
@@ -67,20 +82,24 @@ export async function sendContract(db: Db, dealId: string, kind: "psa" | "assign
           .then((c) => (c?.builderId ? db.query.builders.findFirst({ where: eq(builders.id, c.builderId) }) : null))
       : null;
     if (!builder?.email) return { ok: false, reason: "matched builder has no email address" };
-    recipientName = builder.entityName ?? builder.name;
-    recipientEmail = builder.email;
+    if (!buyerEmail) return { ok: false, reason: "MARLON_EMAIL not set — the assignor has no signer address" };
+    recipients.push(
+      { placeholderName: env().SIGNWELL_ASSIGNMENT_BUYER_ROLE ?? "Assignee", name: builder.entityName ?? builder.name, email: builder.email },
+      { placeholderName: env().SIGNWELL_ASSIGNMENT_ASSIGNOR_ROLE ?? "Assignor", name: buyerEntity, email: buyerEmail },
+    );
   }
 
   const price = latestOffer.amount;
-  const fields = [
-    { api_id: "property_address", value: parcel.address ?? "" },
-    { api_id: "parcel_id", value: parcel.parcelId },
-    { api_id: "county", value: parcel.county },
-    { api_id: "legal_description", value: parcel.legalDescription ?? "" },
-    { api_id: "purchase_price", value: formatMoney(price) },
-    { api_id: "seller_name", value: contact.name ?? "" },
-    { api_id: "owner_of_record", value: parcel.ownerNameRaw ?? "" },
-  ];
+  const fields = toTemplateFields(fieldMap, {
+    propertyAddress: parcel.address ?? "",
+    parcelId: parcel.parcelId,
+    county: parcel.county,
+    legalDescription: parcel.legalDescription ?? "",
+    purchasePrice: formatMoney(price),
+    sellerName: contact.name ?? "",
+    buyerEntity,
+    effectiveDate: new Date().toLocaleDateString("en-US"),
+  });
 
   // A flagged cross-check produces a draft, not a send.
   const asDraft = xcheck.requiresHumanApproval;
@@ -91,7 +110,7 @@ export async function sendContract(db: Db, dealId: string, kind: "psa" | "assign
       templateId,
       name: `${kind === "psa" ? "Purchase Agreement" : "Assignment"} — ${parcel.address ?? parcel.parcelId}`,
       subject: kind === "psa" ? "Purchase agreement for your lot" : "Assignment of purchase agreement",
-      recipients: [{ id: recipientRole, name: recipientName, email: recipientEmail, sendEmail: !asDraft }],
+      recipients: recipients.map((r) => ({ ...r, sendEmail: !asDraft })),
       fields,
       metadata: { deal_id: dealId, contract_kind: kind },
       draft: asDraft,
@@ -118,7 +137,7 @@ export async function sendContract(db: Db, dealId: string, kind: "psa" | "assign
       kind,
       signwellDocumentId: document.id,
       templateUsed: templateId,
-      sellers: [{ name: recipientName, email: recipientEmail, role: recipientRole }],
+      sellers: recipients.map((r) => ({ name: r.name, email: r.email, role: r.placeholderName })),
       price,
       status: asDraft ? "draft_pending_review" : (document.status ?? "sent"),
     })
