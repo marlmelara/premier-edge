@@ -30,6 +30,8 @@ const envSchema = z.object({
     .pipe(z.array(authUserSchema).min(1)),
   SENDIVO_API_KEY: z.string().optional(),
   SENDIVO_WEBHOOK_TOKEN: z.string().optional(),
+  /** Optional pin for which number notifications send from; otherwise the account default. */
+  SENDIVO_FROM_NUMBER_ID: z.string().optional(),
   UPSTASH_REDIS_REST_URL: z.string().optional(),
   UPSTASH_REDIS_REST_TOKEN: z.string().optional(),
   SIGNWELL_API_KEY: z.string().optional(),

@@ -189,21 +189,53 @@ export async function getContactByPhone(phoneNumber: string, subAccountId?: numb
   }
 }
 
+/**
+ * Sendivo rejects a /sms call that carries neither `from` nor
+ * `from_phone_number_id`, so resolve the account's default sending number once
+ * and reuse it. Cached in module memory — the number changes about never, and a
+ * cold start just re-fetches.
+ */
+let defaultFromId: number | undefined;
+
+export async function getDefaultSendingNumberId(): Promise<number> {
+  if (defaultFromId !== undefined) return defaultFromId;
+
+  const configured = env().SENDIVO_FROM_NUMBER_ID;
+  if (configured) {
+    defaultFromId = Number(configured);
+    return defaultFromId;
+  }
+
+  const numbers = await getPhoneNumbers();
+  const usable =
+    numbers.find((n) => n.is_default && n.messaging_status === "active") ??
+    numbers.find((n) => n.messaging_status === "active") ??
+    numbers[0];
+  if (!usable) throw new SendivoError("no phone number available on the Sendivo account");
+
+  defaultFromId = usable.id;
+  return defaultFromId;
+}
+
 /** Stateless number-to-number send — reserved for Marlon notifications (§11b), never sellers. */
-export function sendSms(params: {
+export async function sendSms(params: {
   to: string;
   message: string;
   from?: string;
   fromPhoneNumberId?: number;
   campaignId?: number;
 }) {
+  // One of `from` / `from_phone_number_id` is required by the API.
+  const fromPhoneNumberId =
+    params.fromPhoneNumberId ?? (params.from ? undefined : await getDefaultSendingNumberId());
+
   return request(sendResult, "/sms", {
     method: "POST",
     body: {
       to: params.to,
       message: params.message,
       from: params.from,
-      from_phone_number_id: params.fromPhoneNumberId,
+      from_phone_number_id: fromPhoneNumberId,
       campaign_id: params.campaignId,
     },
   });
