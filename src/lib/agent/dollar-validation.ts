@@ -43,14 +43,28 @@ export function extractDollarAmounts(text: string): number[] {
 
 export type DollarValidation =
   | { ok: true; amounts: number[] }
-  | { ok: false; amounts: number[]; disallowed: number[] };
+  | { ok: false; amounts: number[]; disallowed: number[]; missingRequired?: number };
 
 /**
- * @param allowedCents amounts code authorized for this draft (usually zero or one).
+ * @param allowedCents every amount code supplied for this draft. Includes the
+ *        seller's own stated price: repeating what they said back to them is
+ *        normal negotiation, and that number came from code, not the model.
+ * @param mustIncludeCents when we authorized an offer, the draft has to actually
+ *        contain it. Without this a draft could name only the seller's number
+ *        ("we can do $150,000") and pass — committing us above our ceiling.
  */
-export function validateDraftDollars(text: string, allowedCents: number[]): DollarValidation {
+export function validateDraftDollars(
+  text: string,
+  allowedCents: number[],
+  mustIncludeCents?: number | null,
+): DollarValidation {
   const amounts = extractDollarAmounts(text);
   const allowed = new Set(allowedCents);
   const disallowed = amounts.filter((cents) => !allowed.has(cents));
-  return disallowed.length === 0 ? { ok: true, amounts } : { ok: false, amounts, disallowed };
+  if (disallowed.length > 0) return { ok: false, amounts, disallowed };
+
+  if (mustIncludeCents != null && !amounts.includes(mustIncludeCents)) {
+    return { ok: false, amounts, disallowed: [], missingRequired: mustIncludeCents };
+  }
+  return { ok: true, amounts };
 }

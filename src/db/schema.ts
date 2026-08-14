@@ -82,6 +82,18 @@ export const parcels = pgTable(
     rawPayload: jsonb("raw_payload"),
     appraiserUrl: text("appraiser_url"),
     assessedValue: money("assessed_value"),
+    /**
+     * DOC AMENDMENT (proposed, Aug 14 2026), §5: the GIS findings are
+     * denormalized onto the parcel so the land bank is searchable in plain SQL.
+     *
+     * A lot we can't buy today isn't dead — it's inventory waiting for a buyer
+     * whose buy box tolerates it. Burying "AE zone" inside checks.detail jsonb
+     * makes "find every wetland lot we've ever logged" a table scan through
+     * JSON; as columns it's an index away. `checks` remains the audit trail.
+     */
+    floodZones: text("flood_zones").array(),
+    wetlandsIntersects: boolean("wetlands_intersects"),
+    lastCheckedAt: timestamp("last_checked_at", { withTimezone: true }),
     ...timestamps,
   },
   (t) => [uniqueIndex("parcels_county_parcel_id_idx").on(t.county, t.parcelId)],

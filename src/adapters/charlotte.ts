@@ -24,7 +24,9 @@ const OUT_FIELDS = [
 
 const trimmed = (v: unknown): string | undefined => {
   if (typeof v !== "string") return undefined;
-  const t = v.trim();
+  // County fields are fixed-width padded, so runs of spaces show up mid-string
+  // ("17200      GULFSPRAY CIR") and would land in a contract that way.
+  const t = v.replace(/\s+/g, " ").trim();
   return t.length ? t : undefined;
 };
 

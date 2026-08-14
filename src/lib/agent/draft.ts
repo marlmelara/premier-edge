@@ -36,6 +36,8 @@ Hard rules:
 - Never claim to be an attorney, agent, or appraiser.
 - If you cannot write a compliant reply, return a message asking the seller a clarifying question instead.
 
+When the seller names a price far above AUTHORIZED AMOUNT, stay warm and matter-of-fact. Do not argue, correct them, call their number unrealistic, or explain why it is too high. Acknowledge what they said, give the authorized number as what we can do, and leave the door open. A seller who feels talked down to stops replying, and their lot stays on our list for later.
+
 Every message goes to a human for approval before sending, so write the reply you would actually send.`;
 
 export type DraftContext = {
@@ -82,8 +84,12 @@ Write the next reply.`;
     effort: "medium",
   });
 
-  // The gate: code checks every number in the model's output.
-  const validation = validateDraftDollars(drafted.message, authorized != null ? [authorized] : []);
+  // The gate: code checks every number in the model's output. The seller's own
+  // stated price is allowed through — acknowledging it is good negotiation —
+  // but when we authorized an offer, ours must appear too, so a draft can never
+  // quote only their number back as if we accepted it.
+  const allowed = [authorized, ctx.sellerCounterCents ?? null].filter((v): v is number => v != null);
+  const validation = validateDraftDollars(drafted.message, allowed, authorized);
   if (!validation.ok) {
     return { ok: false, reason: "dollar_validation", message: drafted.message, notes: drafted.notes, validation };
   }

@@ -58,3 +58,33 @@ describe("validateDraftDollars", () => {
     if (!result.ok) expect(result.disallowed).toEqual([cents(26_000)]);
   });
 });
+
+describe("validateDraftDollars — echoing the seller's number", () => {
+  const ours = cents(18_700);
+  const theirs = cents(150_000);
+
+  it("allows acknowledging the seller's price alongside ours", () => {
+    const result = validateDraftDollars(
+      "Understood on the 150,000. What we can do on this lot is 18,700.",
+      [ours, theirs],
+      ours,
+    );
+    expect(result.ok).toBe(true);
+  });
+
+  it("rejects a draft that quotes only the seller's number back as ours", () => {
+    const result = validateDraftDollars("We can do 150,000 for the lot.", [ours, theirs], ours);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.missingRequired).toBe(ours);
+  });
+
+  it("still rejects a third number the seller never said", () => {
+    const result = validateDraftDollars("We can do 18,700, maybe 25,000 later.", [ours, theirs], ours);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.disallowed).toEqual([cents(25_000)]);
+  });
+
+  it("does not require an amount when no offer was authorized", () => {
+    expect(validateDraftDollars("Which lot are we talking about?", [], null).ok).toBe(true);
+  });
+});

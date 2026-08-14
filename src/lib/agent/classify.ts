@@ -43,11 +43,12 @@ Pick exactly one classification:
 - accepted: agrees to a specific price we offered
 - wrong_person: says they don't own it, sold it already, or we have the wrong number
 - question_about_process: asks how this works, who we are, closing costs, timing
+- hostile: insults, profanity, or anger without a clear opt-out request
 - opt_out: asks to stop being contacted, in any wording
-- off_script: anything else, including hostility, confusion, legal threats, or a message you cannot place confidently
+- off_script: anything else — confusion, legal threats, or a message you cannot place confidently
 
 Set confidence to how certain you are. Use off_script when unsure rather than guessing.
-If the seller names a dollar amount as their asking price, put the number in seller_counter_amount; otherwise null.
+If the seller names a dollar amount as their asking price, put the number in seller_counter_amount; otherwise null. Record it even when the number is far above what any buyer would pay — an unrealistic asking price is still worth knowing, and classify it as counter_offer rather than hostile.
 Keep reasoning to one sentence.`;
 
 export async function classifyInbound(params: {

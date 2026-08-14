@@ -68,6 +68,18 @@ export async function verifyParcel(
     checksIncomplete: !flood.ok || !wet.ok,
   };
 
+  // Fold the GIS findings back onto the parcel now that they're known — this is
+  // what the land bank searches on.
+  await db
+    .update(parcels)
+    .set({
+      floodZones: [...new Set(facts.floodZones.map((z) => z.zone))],
+      wetlandsIntersects: flood.ok && wet.ok ? facts.wetlands.length > 0 : null,
+      lastCheckedAt: new Date(),
+      updatedAt: sql`now()`,
+    })
+    .where(eq(parcels.id, row.id));
+
   const matches = matchBuilders(facts, criteria, parcel.address);
   const verdict = verdictFromMatches(matches);
 
@@ -122,10 +134,18 @@ async function safely<T>(fn: () => Promise<T>): Promise<Attempt<T>> {
   }
 }
 
-function parcelValues(county: CountyKey, parcel: ParcelRecord) {
+function parcelValues(county: CountyKey, parcel: ParcelRecord, facts?: ParcelFacts) {
   return {
     county,
     parcelId: parcel.parcelId,
+    // Denormalized GIS findings — what makes the land bank searchable.
+    ...(facts
+      ? {
+          floodZones: [...new Set(facts.floodZones.map((z) => z.zone))],
+          wetlandsIntersects: facts.wetlands.length > 0,
+          lastCheckedAt: new Date(),
+        }
+      : {}),
     address: parcel.address,
     legalDescription: parcel.legalDescription,
     ownerNameRaw: parcel.ownerNameRaw,

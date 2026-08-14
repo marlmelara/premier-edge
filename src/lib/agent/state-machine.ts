@@ -63,6 +63,7 @@ export const INBOUND_CLASSES = [
   "accepted",
   "wrong_person",
   "question_about_process",
+  "hostile",
   "opt_out",
   "off_script",
 ] as const;
@@ -70,7 +71,7 @@ export const INBOUND_CLASSES = [
 export type InboundClass = (typeof INBOUND_CLASSES)[number];
 
 /** Classes that always stop the machine and reach Marlon. */
-export const ESCALATING_CLASSES: InboundClass[] = ["wrong_person", "off_script"];
+export const ESCALATING_CLASSES: InboundClass[] = ["wrong_person", "off_script", "hostile"];
 
 /** Where a classified inbound moves the conversation, given where it is now. */
 export function nextState(current: ConversationState, klass: InboundClass): ConversationState {
