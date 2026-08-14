@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { fromCents } from "@/lib/eligibility/offer-math";
+import { formatMoney } from "@/lib/format";
 import { jsonCall } from "./anthropic";
 import { validateDraftDollars, type DollarValidation } from "./dollar-validation";
 import type { InboundClass } from "./state-machine";
@@ -32,7 +32,7 @@ Voice: a real person who buys land, not a marketing bot. Plain words, no exclama
 Hard rules:
 - Use ONLY the dollar amount given to you in AUTHORIZED AMOUNT, written exactly as given. If AUTHORIZED AMOUNT says none, your message must contain no prices, no ranges, no estimates, and no numbers a reader could mistake for a price.
 - Never invent or imply a number — not an approximate figure, not "around", not "up to", not a comparison to other lots.
-- Never promise anything about closing dates, title, financing, or fees beyond what CONTEXT states.
+- State no deal terms that are not in CONTEXT. That includes who pays closing costs or fees, closing dates or timelines, title work, inspections, contingencies, and financing. If CONTEXT does not name a term, you may not offer it — even when it is customary and even when it would help close. The price is the only commitment you are authorized to make.
 - Never claim to be an attorney, agent, or appraiser.
 - If you cannot write a compliant reply, return a message asking the seller a clarifying question instead.
 
@@ -65,9 +65,9 @@ Seller: ${ctx.sellerName ?? "unknown name"}
 Property: ${ctx.parcelAddress ?? "not yet identified"}${ctx.county ? ` (${ctx.county} County)` : ""}
 Conversation state: ${ctx.conversationState}
 Latest message classified as: ${ctx.classification}
-${ctx.sellerCounterCents != null ? `Seller has asked for: $${fromCents(ctx.sellerCounterCents)}` : ""}
+${ctx.sellerCounterCents != null ? `Seller has asked for: ${formatMoney(ctx.sellerCounterCents / 100)}` : ""}
 
-AUTHORIZED AMOUNT: ${authorized != null ? `$${fromCents(authorized)}` : "none — do not mention any price"}
+AUTHORIZED AMOUNT: ${authorized != null ? formatMoney(authorized / 100) : "none — do not mention any price"}
 
 Thread so far:
 ${transcript || "(no prior messages)"}
