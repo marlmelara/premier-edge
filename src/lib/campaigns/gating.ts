@@ -19,8 +19,8 @@ export type GateInput = {
 export type GateCheck = { key: keyof GateInput; label: string; passed: boolean; fix: string };
 
 const CHECKS: { key: keyof GateInput; label: string; fix: string }[] = [
-  { key: "hasCriteria", label: "Criteria set", fix: "Attach a criteria set (min sqft, flood zones, builder price, fee floor)." },
-  { key: "hasBuilder", label: "Matched builder", fix: "Attach the builder who buys in this market." },
+  { key: "hasCriteria", label: "Buy box", fix: "Give each buyer a buy box: min sqft, flood zones, what they pay, your fee floor." },
+  { key: "hasBuilder", label: "Buyer attached", fix: "Attach at least one buyer to this campaign under Buyers." },
   { key: "hasTitleRouting", label: "Title routing", fix: "Set a title company on the builder, the campaign, or the FL default." },
   { key: "sendivoHealthy", label: "Sendivo reachable", fix: "Check the Sendivo API key and account status." },
   { key: "hasSendingNumber", label: "Sending number", fix: "Assign an active 10DLC number to this campaign." },

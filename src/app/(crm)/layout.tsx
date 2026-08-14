@@ -24,6 +24,9 @@ export default async function CrmLayout({ children }: { children: React.ReactNod
             <Link href="/campaigns" className="hover:text-foreground">
               Campaigns
             </Link>
+            <Link href="/buyers" className="hover:text-foreground">
+              Buyers
+            </Link>
           </nav>
         </div>
         <form

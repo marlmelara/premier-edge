@@ -5,9 +5,10 @@ import { eq, sql } from "drizzle-orm";
 import { auth } from "@/auth";
 import { isCountyKey } from "@/adapters/registry";
 import { getDb } from "@/db";
-import { agentActions, criteriaSets, deals, offers } from "@/db/schema";
+import { agentActions, deals, offers } from "@/db/schema";
 import { verifyParcel } from "@/lib/eligibility/verify-parcel";
-import { anchorOffer, fromCents, maxOffer, toCents } from "@/lib/eligibility/offer-math";
+import { fromCents } from "@/lib/eligibility/offer-math";
+import { bestMatch } from "@/lib/eligibility/match-builders";
 import { sendSellerMessage } from "@/lib/sendivo/send";
 import { sendUrgentAlert } from "@/lib/alerts";
 import { getPendingDraft, recordDraftResolution } from "@/lib/agent/drafts";
@@ -157,35 +158,19 @@ export async function attachParcelAction(dealId: string, county: string, parcelI
   const deal = await db.query.deals.findFirst({ where: eq(deals.id, dealId) });
   if (!deal) return { ok: false as const, reason: "deal not found" };
 
-  const campaign = deal.campaignId
-    ? await db.query.campaigns.findFirst({ where: (c, { eq: eqf }) => eqf(c.id, deal.campaignId!) })
-    : null;
-  const criteria = campaign?.criteriaId
-    ? await db.query.criteriaSets.findFirst({ where: eq(criteriaSets.id, campaign.criteriaId) })
-    : null;
-
-  const verifyCriteria = criteria
-    ? {
-        minSqft: criteria.minSqft,
-        allowedFloodZones: criteria.allowedFloodZones,
-        wetlandsAllowed: criteria.wetlandsAllowed,
-      }
-    : { minSqft: 10_000, allowedFloodZones: ["X"], wetlandsAllowed: false };
-
-  const result = await verifyParcel(db, county, parcelId.trim(), verifyCriteria);
+  const result = await verifyParcel(db, county, parcelId.trim(), deal.campaignId ?? null);
   if (!result) return { ok: false as const, reason: `parcel not found in ${county} records` };
 
-  const numbers = criteria
-    ? (() => {
-        const oc = {
-          builderBuyPrice: toCents(criteria.builderBuyPrice),
-          minAssignmentFee: toCents(criteria.minAssignmentFee),
-          anchorPct: Number(criteria.anchorPct),
-          concessionSteps: Array.isArray(criteria.concessionSteps) ? (criteria.concessionSteps as number[]) : undefined,
-        };
-        return { maxOffer: fromCents(maxOffer(oc)), anchor: fromCents(anchorOffer(oc)) };
-      })()
-    : {};
+  // The numbers follow whichever buyer the lot actually matched — max offer is
+  // that buyer's price minus their fee floor, not a campaign-wide constant.
+  const best = bestMatch(result.matches);
+  const numbers = best
+    ? {
+        matchedBuilderId: best.builderId,
+        maxOffer: fromCents(best.maxOfferCents),
+        anchor: fromCents(best.anchorCents),
+      }
+    : { matchedBuilderId: null };
 
   await db
     .update(deals)
@@ -204,5 +189,10 @@ export async function attachParcelAction(dealId: string, county: string, parcelI
 
   revalidatePath("/deal-room");
   revalidatePath("/pipeline");
-  return { ok: true as const, verdict: result.verdict };
+  return {
+    ok: true as const,
+    verdict: result.verdict,
+    matchedBuilder: best?.builderName ?? null,
+    buyersConsidered: result.matches.length,
+  };
 }

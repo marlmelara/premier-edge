@@ -1,43 +1,43 @@
-import { sql } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { getAdapter } from "@/adapters/registry";
 import type { CountyKey, ParcelRecord } from "@/adapters/types";
 import type { Db } from "@/db";
-import { checks, parcels } from "@/db/schema";
+import { builders, campaignBuilders, checks, criteriaSets, parcels } from "@/db/schema";
 import { getRedis } from "@/lib/redis";
-import { queryFloodZones } from "./fema";
-import { queryWetlands } from "./nwi";
-import { evaluateFloodZones, evaluateSqft, evaluateWetlands, overallVerdict, type CheckOutcome } from "./rules";
-
-export type VerifyCriteria = {
-  minSqft: number;
-  allowedFloodZones: string[];
-  wetlandsAllowed: boolean;
-};
+import { queryFloodZones, type FloodZoneHit } from "./fema";
+import { queryWetlands, type WetlandHit } from "./nwi";
+import { matchBuilders, verdictFromMatches, type BuilderCriteria, type BuilderMatch, type ParcelFacts } from "./match-builders";
+import { toCents } from "./offer-math";
+import type { CheckOutcome } from "./rules";
 
 export type VerifyResult = {
   parcelRowId: string;
   parcel: ParcelRecord;
-  outcomes: { kind: "county" | "fema" | "nwi" | "sqft"; outcome: CheckOutcome }[];
+  facts: ParcelFacts;
+  /** Every buyer on the campaign, scored — best offer first. */
+  matches: BuilderMatch[];
   verdict: "pass" | "fail" | "pending";
   fromCache: boolean;
 };
 
 const CACHE_TTL_SECONDS = 7 * 24 * 60 * 60;
-const cacheKey = (county: CountyKey, parcelId: string, c: VerifyCriteria) =>
-  `verify:${county}:${parcelId}:${c.minSqft}:${c.allowedFloodZones.join("|")}:${c.wetlandsAllowed}`;
 
 /**
- * The eligibility pipeline (design doc §6): county adapter → FEMA → NWI →
- * size → persisted checks + Redis cache. Every run appends fresh rows to
- * `checks` (history preserved); the parcels row is upserted on
- * (county, parcel_id).
+ * The eligibility pipeline (design doc §6, extended for multiple buyers).
+ *
+ * County adapter → FEMA → NWI → size, gathered once per parcel, then scored
+ * against each buyer attached to the campaign. This is the due-diligence gate:
+ * the agent cannot quote a price until a lot has a buyer whose criteria it
+ * satisfies, so we never negotiate on land nobody wants.
  */
 export async function verifyParcel(
   db: Db,
   county: CountyKey,
   parcelId: string,
-  criteria: VerifyCriteria,
+  campaignId: string | null,
 ): Promise<VerifyResult | null> {
+  const criteria = campaignId ? await loadCampaignBuilders(db, campaignId) : [];
+
   const redis = getRedis();
   const key = cacheKey(county, parcelId, criteria);
   if (redis) {
@@ -49,99 +49,158 @@ export async function verifyParcel(
   const parcel = await adapter.getParcelById(parcelId);
   if (!parcel) return null;
 
-  // Upsert the parcels row first so checks can reference it.
   const [row] = await db
     .insert(parcels)
-    .values({
-      county,
-      parcelId: parcel.parcelId,
-      address: parcel.address,
-      legalDescription: parcel.legalDescription,
-      ownerNameRaw: parcel.ownerNameRaw,
-      acreage: parcel.acreage?.toFixed(4),
-      sqft: parcel.sqft,
-      geometry: parcel.geometry,
-      sourceAdapter: parcel.sourceAdapter,
-      rawPayload: parcel.rawPayload,
-      appraiserUrl: parcel.appraiserUrl,
-      assessedValue: parcel.assessedValue?.toFixed(2),
-    })
-    .onConflictDoUpdate({
-      target: [parcels.county, parcels.parcelId],
-      set: {
-        address: parcel.address,
-        legalDescription: parcel.legalDescription,
-        ownerNameRaw: parcel.ownerNameRaw,
-        acreage: parcel.acreage?.toFixed(4),
-        sqft: parcel.sqft,
-        geometry: parcel.geometry,
-        sourceAdapter: parcel.sourceAdapter,
-        rawPayload: parcel.rawPayload,
-        appraiserUrl: parcel.appraiserUrl,
-        assessedValue: parcel.assessedValue?.toFixed(2),
-        updatedAt: sql`now()`,
-      },
-    })
+    .values(parcelValues(county, parcel))
+    .onConflictDoUpdate({ target: [parcels.county, parcels.parcelId], set: { ...parcelValues(county, parcel), updatedAt: sql`now()` } })
     .returning({ id: parcels.id });
 
-  const countyOutcome: CheckOutcome = {
-    result: "pass",
-    summary: `found via ${adapter.source}`,
-    detail: { parcelId: parcel.parcelId, address: parcel.address, owner: parcel.ownerNameRaw },
-  };
-
-  const runExternal = async (fn: () => Promise<CheckOutcome>): Promise<CheckOutcome> => {
-    try {
-      return await fn();
-    } catch (error) {
-      return {
-        result: "error",
-        summary: "service unavailable",
-        detail: { error: error instanceof Error ? error.message : String(error) },
-      };
-    }
-  };
-
+  // Parcel-level facts: gathered once, regardless of how many buyers we score.
   const geometry = parcel.geometry;
-  const [femaOutcome, nwiOutcome] = geometry
-    ? await Promise.all([
-        runExternal(async () => evaluateFloodZones(await queryFloodZones(geometry), criteria.allowedFloodZones)),
-        runExternal(async () => evaluateWetlands(await queryWetlands(geometry), criteria.wetlandsAllowed)),
-      ])
-    : [
-        { result: "error" as const, summary: "no geometry", detail: {} },
-        { result: "error" as const, summary: "no geometry", detail: {} },
-      ];
-  const sqftOutcome = evaluateSqft(parcel.sqft, criteria.minSqft);
+  const [flood, wet] = geometry
+    ? await Promise.all([safely(() => queryFloodZones(geometry)), safely(() => queryWetlands(geometry))])
+    : [{ ok: false as const, error: "no parcel geometry" }, { ok: false as const, error: "no parcel geometry" }];
 
-  const outcomes: VerifyResult["outcomes"] = [
-    { kind: "county", outcome: countyOutcome },
-    { kind: "fema", outcome: femaOutcome },
-    { kind: "nwi", outcome: nwiOutcome },
-    { kind: "sqft", outcome: sqftOutcome },
-  ];
-
-  await db.insert(checks).values(
-    outcomes.map(({ kind, outcome }) => ({
-      parcelId: row.id,
-      kind,
-      result: outcome.result,
-      detail: { summary: outcome.summary, ...outcome.detail, criteria },
-    })),
-  );
-
-  const verdict = overallVerdict(outcomes.map((o) => o.outcome));
-  const result: Omit<VerifyResult, "fromCache"> = {
-    parcelRowId: row.id,
-    parcel,
-    outcomes,
-    verdict,
+  const facts: ParcelFacts = {
+    sqft: parcel.sqft,
+    floodZones: flood.ok ? flood.value : [],
+    wetlands: wet.ok ? wet.value : [],
+    checksIncomplete: !flood.ok || !wet.ok,
   };
 
-  // Cache only clean verdicts — errors should retry on next request.
-  if (redis && verdict !== "pending") {
-    await redis.set(key, result, { ex: CACHE_TTL_SECONDS }).catch(() => {});
-  }
+  const matches = matchBuilders(facts, criteria, parcel.address);
+  const verdict = verdictFromMatches(matches);
 
+  await recordChecks(db, row.id, adapter.source, parcel, facts, flood, wet, matches);
+
+  const result: Omit<VerifyResult, "fromCache"> = { parcelRowId: row.id, parcel, facts, matches, verdict };
+  if (redis && verdict !== "pending") await redis.set(key, result, { ex: CACHE_TTL_SECONDS }).catch(() => {});
   return { ...result, fromCache: false };
+}
+
+/** Every buyer attached to the campaign, with their own criteria. */
+export async function loadCampaignBuilders(db: Db, campaignId: string): Promise<BuilderCriteria[]> {
+  const rows = await db
+    .select({
+      builderId: builders.id,
+      builderName: builders.name,
+      markets: builders.markets,
+      minSqft: criteriaSets.minSqft,
+      allowedFloodZones: criteriaSets.allowedFloodZones,
+      wetlandsAllowed: criteriaSets.wetlandsAllowed,
+      builderBuyPrice: criteriaSets.builderBuyPrice,
+      minAssignmentFee: criteriaSets.minAssignmentFee,
+      anchorPct: criteriaSets.anchorPct,
+      concessionSteps: criteriaSets.concessionSteps,
+    })
+    .from(campaignBuilders)
+    .innerJoin(builders, eq(campaignBuilders.builderId, builders.id))
+    .innerJoin(criteriaSets, eq(criteriaSets.builderId, builders.id))
+    .where(eq(campaignBuilders.campaignId, campaignId));
+
+  return rows.map((r) => ({
+    builderId: r.builderId,
+    builderName: r.builderName,
+    markets: r.markets ?? undefined,
+    minSqft: r.minSqft,
+    allowedFloodZones: r.allowedFloodZones,
+    wetlandsAllowed: r.wetlandsAllowed,
+    builderBuyPrice: toCents(r.builderBuyPrice),
+    minAssignmentFee: toCents(r.minAssignmentFee),
+    anchorPct: Number(r.anchorPct),
+    concessionSteps: Array.isArray(r.concessionSteps) ? (r.concessionSteps as number[]) : undefined,
+  }));
+}
+
+type Attempt<T> = { ok: true; value: T } | { ok: false; error: string };
+
+async function safely<T>(fn: () => Promise<T>): Promise<Attempt<T>> {
+  try {
+    return { ok: true, value: await fn() };
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+function parcelValues(county: CountyKey, parcel: ParcelRecord) {
+  return {
+    county,
+    parcelId: parcel.parcelId,
+    address: parcel.address,
+    legalDescription: parcel.legalDescription,
+    ownerNameRaw: parcel.ownerNameRaw,
+    acreage: parcel.acreage?.toFixed(4),
+    sqft: parcel.sqft,
+    geometry: parcel.geometry,
+    sourceAdapter: parcel.sourceAdapter,
+    rawPayload: parcel.rawPayload,
+    appraiserUrl: parcel.appraiserUrl,
+    assessedValue: parcel.assessedValue?.toFixed(2),
+  };
+}
+
+const cacheKey = (county: CountyKey, parcelId: string, criteria: BuilderCriteria[]) =>
+  `verify:${county}:${parcelId}:${criteria
+    .map((c) => `${c.builderId}:${c.minSqft}:${c.allowedFloodZones.join("|")}:${c.wetlandsAllowed}:${c.builderBuyPrice}`)
+    .sort()
+    .join(",")}`;
+
+/**
+ * One row per check kind. Buyer-specific outcomes are folded into the detail so
+ * the context card can explain which buyer rejected the lot and why.
+ */
+async function recordChecks(
+  db: Db,
+  parcelRowId: string,
+  source: string,
+  parcel: ParcelRecord,
+  facts: ParcelFacts,
+  flood: Attempt<FloodZoneHit[]>,
+  wet: Attempt<WetlandHit[]>,
+  matches: BuilderMatch[],
+) {
+  const perBuyer = (kind: "fema" | "nwi" | "sqft") =>
+    matches.map((m) => ({
+      builder: m.builderName,
+      result: m.outcomes.find((o) => o.kind === kind)?.outcome.result,
+      summary: m.outcomes.find((o) => o.kind === kind)?.outcome.summary,
+    }));
+
+  const worst = (kind: "fema" | "nwi" | "sqft"): CheckOutcome["result"] => {
+    const results = matches.map((m) => m.outcomes.find((o) => o.kind === kind)?.outcome.result);
+    if (results.includes("pass")) return "pass";
+    if (results.includes("error") || results.length === 0) return "error";
+    return "fail";
+  };
+
+  await db.insert(checks).values([
+    {
+      parcelId: parcelRowId,
+      kind: "county" as const,
+      result: "pass" as const,
+      detail: { summary: `found via ${source}`, owner: parcel.ownerNameRaw, address: parcel.address },
+    },
+    {
+      parcelId: parcelRowId,
+      kind: "fema" as const,
+      result: flood.ok ? worst("fema") : ("error" as const),
+      detail: flood.ok
+        ? { summary: [...new Set(facts.floodZones.map((z) => z.zone))].join(", ") || "no NFHL coverage", zones: facts.floodZones, byBuyer: perBuyer("fema") }
+        : { summary: "service unavailable", error: flood.error },
+    },
+    {
+      parcelId: parcelRowId,
+      kind: "nwi" as const,
+      result: wet.ok ? worst("nwi") : ("error" as const),
+      detail: wet.ok
+        ? { summary: facts.wetlands.length === 0 ? "clear" : "intersects", hits: facts.wetlands, byBuyer: perBuyer("nwi") }
+        : { summary: "service unavailable", error: wet.error },
+    },
+    {
+      parcelId: parcelRowId,
+      kind: "sqft" as const,
+      result: worst("sqft"),
+      detail: { summary: facts.sqft ? `${facts.sqft.toLocaleString("en-US")} sqft` : "size unknown", sqft: facts.sqft, byBuyer: perBuyer("sqft") },
+    },
+  ]);
 }

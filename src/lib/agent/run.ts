@@ -1,6 +1,6 @@
 import { desc, eq } from "drizzle-orm";
 import type { Db } from "@/db";
-import { agentActions, campaigns, contacts, conversations, criteriaSets, deals, messages, parcels } from "@/db/schema";
+import { agentActions, contacts, conversations, criteriaSets, deals, messages, parcels } from "@/db/schema";
 import {
   anchorOffer,
   fromCents,
@@ -267,14 +267,15 @@ async function authorizeOffer(
   if (klass !== "asking_price" && klass !== "counter_offer") return { kind: "none" };
 
   const deal = await db.query.deals.findFirst({ where: eq(deals.id, dealId) });
-  if (!deal || deal.verdict !== "pass") return { kind: "none" };
+  // The due-diligence gate: no price until a verified parcel has a buyer whose
+  // criteria it satisfies. Anything less and we'd be negotiating on a lot we
+  // can't actually sell.
+  if (!deal || deal.verdict !== "pass" || !deal.matchedBuilderId) return { kind: "none" };
 
-  const campaign = deal.campaignId
-    ? await db.query.campaigns.findFirst({ where: eq(campaigns.id, deal.campaignId) })
-    : null;
-  const criteria = campaign?.criteriaId
-    ? await db.query.criteriaSets.findFirst({ where: eq(criteriaSets.id, campaign.criteriaId) })
-    : null;
+  // Price comes from the buyer this lot was matched to, not a campaign default.
+  const criteria = await db.query.criteriaSets.findFirst({
+    where: eq(criteriaSets.builderId, deal.matchedBuilderId),
+  });
   if (!criteria) return { kind: "none" };
 
   const oc: OfferCriteria = {

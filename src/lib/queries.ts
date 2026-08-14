@@ -15,6 +15,7 @@ import {
   parcels,
   titleCompanies,
 } from "@/db/schema";
+import { campaignBuilders } from "@/db/schema";
 import { evaluateCampaignGate } from "@/lib/campaigns/gating";
 
 /**
@@ -87,8 +88,9 @@ export async function getConversationDetail(conversationId: string) {
     deal.campaignId ? db.query.campaigns.findFirst({ where: eq(campaigns.id, deal.campaignId) }) : null,
   ]);
 
-  const criteria = campaign?.criteriaId
-    ? await db.query.criteriaSets.findFirst({ where: eq(criteriaSets.id, campaign.criteriaId) })
+  // The numbers on the card follow the buyer this lot was matched to.
+  const criteria = deal.matchedBuilderId
+    ? await db.query.criteriaSets.findFirst({ where: eq(criteriaSets.builderId, deal.matchedBuilderId) })
     : null;
 
   const dealContracts = await db.query.contracts.findMany({
@@ -175,6 +177,11 @@ export async function listCampaignsWithGate(sendivoHealthy: boolean, agentConfig
       titleCompanyId: campaigns.titleCompanyId,
       sendivoCampaignId: campaigns.sendivoCampaignId,
       builderTitleCompanyId: builders.preferredTitleCompanyId,
+      buyerCount: sql<number>`(
+        SELECT count(*)::int FROM ${campaignBuilders}
+        JOIN ${criteriaSets} ON ${criteriaSets.builderId} = ${campaignBuilders.builderId}
+        WHERE ${campaignBuilders.campaignId} = ${campaigns.id}
+      )`,
     })
     .from(campaigns)
     .leftJoin(builders, eq(campaigns.builderId, builders.id))
@@ -189,8 +196,8 @@ export async function listCampaignsWithGate(sendivoHealthy: boolean, agentConfig
   return rows.map((row) => ({
     ...row,
     gate: evaluateCampaignGate({
-      hasCriteria: Boolean(row.criteriaId),
-      hasBuilder: Boolean(row.builderId),
+      hasCriteria: row.buyerCount > 0,
+      hasBuilder: row.buyerCount > 0,
       hasTitleRouting: Boolean(row.titleCompanyId ?? row.builderTitleCompanyId ?? defaultTitle?.id),
       sendivoHealthy,
       hasSendingNumber: Boolean(row.sendivoCampaignId),

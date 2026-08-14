@@ -8,9 +8,8 @@ import { verifyParcel } from "@/lib/eligibility/verify-parcel";
 const requestSchema = z.object({
   county: z.string(),
   parcelId: z.string().min(1),
-  minSqft: z.number().int().positive(),
-  allowedFloodZones: z.array(z.string()).default(["X"]),
-  wetlandsAllowed: z.boolean().default(false),
+  /** Scores the parcel against every buyer on this campaign. */
+  campaignId: z.string().uuid().nullable().default(null),
 });
 
 /** Runs the eligibility pipeline for one parcel. Session-gated (internal tool). */
@@ -22,12 +21,12 @@ export async function POST(req: NextRequest) {
   if (!parsed.success) {
     return NextResponse.json({ error: "invalid request", issues: parsed.error.flatten() }, { status: 400 });
   }
-  const { county, parcelId, minSqft, allowedFloodZones, wetlandsAllowed } = parsed.data;
+  const { county, parcelId, campaignId } = parsed.data;
   if (!isCountyKey(county)) {
     return NextResponse.json({ error: `unknown county — expected one of ${listCounties().join(", ")}` }, { status: 400 });
   }
 
-  const result = await verifyParcel(getDb(), county, parcelId, { minSqft, allowedFloodZones, wetlandsAllowed });
+  const result = await verifyParcel(getDb(), county, parcelId, campaignId);
   if (!result) return NextResponse.json({ error: "parcel not found" }, { status: 404 });
   return NextResponse.json(result);
 }

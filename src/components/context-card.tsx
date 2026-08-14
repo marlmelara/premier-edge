@@ -72,6 +72,30 @@ export function ContextCard({
     : null;
 
   const xcheck = crossCheckOwner(contact?.name, parcel.ownerNameRaw);
+
+  // Per-buyer results were recorded into the check details by the eligibility
+  // pipeline; reassemble them so the card can show who wants this lot.
+  const buyerMatches = (() => {
+    type Row = { builder: string; fits: boolean; failures: string[]; maxOffer: string | null };
+    const byBuilder = new Map<string, Row>();
+    for (const check of checks) {
+      const detail = (check.detail ?? {}) as { byBuyer?: { builder?: string; result?: string; summary?: string }[] };
+      for (const entry of detail.byBuyer ?? []) {
+        if (!entry.builder) continue;
+        const row = byBuilder.get(entry.builder) ?? { builder: entry.builder, fits: true, failures: [], maxOffer: null };
+        if (entry.result !== "pass") {
+          row.fits = false;
+          row.failures.push(`${CHECK_LABELS[check.kind] ?? check.kind}: ${entry.summary ?? entry.result}`);
+        }
+        byBuilder.set(entry.builder, row);
+      }
+    }
+    const rows = [...byBuilder.values()];
+    // The matched buyer's numbers are already denormalized on the deal.
+    const matched = rows.find((r) => r.fits);
+    if (matched) matched.maxOffer = deal.maxOffer;
+    return rows.sort((a, b) => Number(b.fits) - Number(a.fits));
+  })();
   const failedKinds = checks.filter((c) => c.result === "fail").map((c) => CHECK_LABELS[c.kind] ?? c.kind);
   const errorKinds = checks.filter((c) => c.result === "error").map((c) => CHECK_LABELS[c.kind] ?? c.kind);
 
@@ -123,6 +147,33 @@ export function ContextCard({
             : errorKinds.length
               ? `PENDING: ${errorKinds.join(", ").toLowerCase()} ⚠️`
               : "PENDING ⚠️"}
+      </div>
+
+      {/* Which buyer wants it — the point of the whole check */}
+      <div className="space-y-1">
+        <p className="text-[11px] font-semibold text-muted-foreground">Buyer match</p>
+        {buyerMatches.length === 0 ? (
+          <p className="text-[11px] text-yellow-400">
+            No buyers on this campaign yet — add one under Buyers, or nothing can be priced.
+          </p>
+        ) : (
+          buyerMatches.map((m) => (
+            <div
+              key={m.builder}
+              className={`flex items-start justify-between rounded border px-2 py-1 text-[11px] ${
+                m.fits ? "border-green-800 bg-green-950/30" : "border-border"
+              }`}
+            >
+              <span className={m.fits ? "text-green-300" : "text-muted-foreground"}>
+                {m.fits ? "✅" : "❌"} {m.builder}
+                {!m.fits && m.failures.length > 0 && (
+                  <span className="block pl-4 text-muted-foreground">{m.failures.join(" · ")}</span>
+                )}
+              </span>
+              {m.fits && <span className="shrink-0 font-medium text-green-300">max {formatMoney(m.maxOffer)}</span>}
+            </div>
+          ))
+        )}
       </div>
 
       {/* Eligibility badges — click-expandable to raw detail + checked-at */}

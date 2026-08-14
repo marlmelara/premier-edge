@@ -115,8 +115,20 @@ export const checks = pgTable("checks", {
   ...timestamps,
 });
 
+/**
+ * DOC AMENDMENT (proposed, Aug 14 2026) to §5/§10: a criteria set now belongs to
+ * a *builder*, and a campaign can carry several builders (see campaignBuilders).
+ *
+ * Why: builder_buy_price is inherently per-buyer. With one criteria set per
+ * campaign there is no single answer to "does this lot fit" once more than one
+ * builder is in play — and the max offer depends on which builder takes it.
+ * Matching a parcel against every buyer's criteria is what keeps us from
+ * negotiating on lots nobody wants.
+ */
 export const criteriaSets = pgTable("criteria_sets", {
   id: uuid("id").primaryKey().defaultRandom(),
+  /** Nullable only so pre-amendment rows survive; new criteria always name a builder. */
+  builderId: uuid("builder_id"),
   minSqft: integer("min_sqft").notNull(),
   allowedFloodZones: text("allowed_flood_zones")
     .array()
@@ -171,6 +183,26 @@ export const campaigns = pgTable("campaigns", {
   ...timestamps,
 });
 
+/**
+ * Which buyers a campaign is sourcing for. Marlon usually runs one builder per
+ * campaign, but the model supports several so a lot can be matched to whichever
+ * buyer actually wants it.
+ */
+export const campaignBuilders = pgTable(
+  "campaign_builders",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    campaignId: uuid("campaign_id")
+      .notNull()
+      .references(() => campaigns.id),
+    builderId: uuid("builder_id")
+      .notNull()
+      .references(() => builders.id),
+    ...timestamps,
+  },
+  (t) => [uniqueIndex("campaign_builders_pair_idx").on(t.campaignId, t.builderId)],
+);
+
 export const deals = pgTable("deals", {
   id: uuid("id").primaryKey().defaultRandom(),
   contactId: uuid("contact_id")
@@ -188,6 +220,12 @@ export const deals = pgTable("deals", {
   lastOffer: money("last_offer"),
   sellerCounter: money("seller_counter"),
   deadReason: text("dead_reason"),
+  /**
+   * The buyer this lot was matched to — the one whose criteria it satisfies and
+   * who pays best. Set by the eligibility pipeline, and what the offer math and
+   * the assignment contract both key off.
+   */
+  matchedBuilderId: uuid("matched_builder_id").references(() => builders.id),
   // DOC AMENDMENT (proposed, Aug 12 2026): not in design doc §5. The §11b
   // briefing's top-priority line is "closings within N days (address +
   // countdown)", which needs a real date — deriving it from updated_at gives a
