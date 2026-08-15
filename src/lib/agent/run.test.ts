@@ -53,6 +53,8 @@ const classification = (over: Partial<Awaited<ReturnType<typeof classifyInbound>
   classification: "interested" as const,
   confidence: 0.95,
   seller_counter_amount: null,
+  utilities_water: null,
+  utilities_sewer: null,
   reasoning: "test",
   ...over,
 });

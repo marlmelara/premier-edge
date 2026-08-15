@@ -5,7 +5,7 @@ import { and, eq, sql } from "drizzle-orm";
 import { auth } from "@/auth";
 import { isCountyKey } from "@/adapters/registry";
 import { getDb } from "@/db";
-import { agentActions, contactParcels, contacts, deals, offers } from "@/db/schema";
+import { agentActions, contactParcels, contacts, deals, offers, parcels } from "@/db/schema";
 import { attachParcelToDeal } from "@/lib/deals/attach-parcel";
 import { verifyParcel } from "@/lib/eligibility/verify-parcel";
 import { fromCents } from "@/lib/eligibility/offer-math";
@@ -289,4 +289,41 @@ export async function setContactLabelsAction(contactId: string, labels: string[]
   revalidatePath("/deal-room");
   revalidatePath("/sellers");
   return { ok: true as const, labels: cleaned };
+}
+
+/**
+ * Set a parcel's utilities by hand.
+ *
+ * Charlotte and St. Lucie publish no water/sewer service-area layer — verified
+ * against both counties' own data catalogs — so outside Lee this is how the
+ * answer gets in when the seller has told us, or when Marlon simply knows.
+ * Recorded with its source so the context card can say where it came from.
+ */
+export async function setParcelUtilitiesAction(
+  parcelRowId: string,
+  water: "city" | "well" | null,
+  sewer: "city" | "septic" | null,
+) {
+  await requireSession();
+  const db = getDb();
+
+  await db
+    .update(parcels)
+    .set({
+      waterSource: water,
+      sewerType: sewer,
+      utilityDetail: water || sewer ? "entered by hand" : null,
+      updatedAt: new Date(),
+    })
+    .where(eq(parcels.id, parcelRowId));
+
+  await db.insert(agentActions).values({
+    type: "utilities_set_manually",
+    input: { parcelRowId },
+    output: { water, sewer },
+  });
+
+  revalidatePath("/deal-room");
+  revalidatePath("/land-bank");
+  return { ok: true as const };
 }

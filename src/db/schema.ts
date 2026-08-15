@@ -207,6 +207,15 @@ export const builders = pgTable("builders", {
   markets: text("markets").array(),
   buyCriteria: jsonb("buy_criteria"),
   preferredTitleCompanyId: uuid("preferred_title_company_id").references(() => titleCompanies.id),
+  /**
+   * DOC AMENDMENT (Aug 15 2026): a buyer often insists on their own closer.
+   * Free text rather than a foreign key, because Marlon may only have a name or
+   * an address and shouldn't have to create a full title-company record to
+   * capture that. Used on the seller's PSA too — worst case it's changed later
+   * by addendum, which is the normal remedy.
+   */
+  preferredTitleName: text("preferred_title_name"),
+  preferredTitleAddress: text("preferred_title_address"),
   notes: text("notes"),
   ...timestamps,
 });

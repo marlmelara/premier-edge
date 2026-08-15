@@ -24,6 +24,8 @@ export default async function BuyersPage() {
         email: builders.email,
         phone: builders.phone,
         markets: builders.markets,
+        preferredTitleName: builders.preferredTitleName,
+        preferredTitleAddress: builders.preferredTitleAddress,
         notes: builders.notes,
       })
       .from(builders)

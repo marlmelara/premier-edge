@@ -179,3 +179,24 @@ export function describeUtilityRules(rules: UtilityRule[]): string {
     })
     .join(" · ");
 }
+
+/**
+ * Does anyone we'd sell this lot to actually price on utilities?
+ *
+ * This is the question that decides whether to spend a message asking the
+ * seller. If every buyer attached to the lot ignores water and sewer, the
+ * answer changes nothing and asking just adds a round trip to a negotiation
+ * that could have carried a number instead.
+ */
+export function anyBuyerPricesOnUtilities(boxes: { utilityRules?: UtilityRule[] }[]): boolean {
+  return boxes.some((b) => (b.utilityRules?.length ?? 0) > 0);
+}
+
+/** True when utilities would change the answer but we don't know them yet. */
+export function utilitiesWouldDecide(
+  boxes: { utilityRules?: UtilityRule[] }[],
+  utilities: ParcelUtilities,
+): boolean {
+  if (!anyBuyerPricesOnUtilities(boxes)) return false;
+  return !utilities.water || !utilities.sewer;
+}

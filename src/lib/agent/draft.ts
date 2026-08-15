@@ -51,6 +51,9 @@ const INTENT_INSTRUCTION: Record<DraftIntent, string> = {
   probe:
     "Ask what they would want for the lot. That is the entire job of this message. We deliberately do not name a price first — a seller who would have taken less should never hear our number — so do not hint at a range, quote what other lots sold for, or promise our number will be strong. One short, friendly question.",
 
+  utility_probe:
+    "Ask what utilities the lot has — specifically whether it is on city/county water or a well, and city/county sewer or septic. Ask it plainly, the way a buyer would: most owners know the answer without looking it up. Do not name a price, do not hint at one, and do not explain that the answer changes what we can pay.",
+
   offer: "Give them the authorized amount as what we can do on this lot.",
 
   nudge:

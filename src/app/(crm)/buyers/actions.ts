@@ -53,6 +53,9 @@ export async function saveBuyerAction(formData: FormData) {
     email: String(formData.get("email") ?? "").trim() || null,
     phone: String(formData.get("phone") ?? "").trim() || null,
     markets: list(formData.get("markets")),
+    // Free text: often all Marlon has is a name, or a name and an address.
+    preferredTitleName: String(formData.get("preferredTitleName") ?? "").trim() || null,
+    preferredTitleAddress: String(formData.get("preferredTitleAddress") ?? "").trim() || null,
     notes: String(formData.get("notes") ?? "").trim() || null,
     updatedAt: new Date(),
   };

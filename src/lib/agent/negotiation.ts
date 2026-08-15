@@ -23,6 +23,16 @@ import type { InboundClass } from "./state-machine";
 
 /** How many times we ask for the seller's number before we put ours down first. */
 export const MAX_PROBES = 2;
+
+/**
+ * How many times we ask what utilities the lot has before pricing without them.
+ *
+ * Once. Charlotte and St. Lucie publish no service-area layer — verified
+ * against both counties' own catalogs — so outside Lee the seller is the only
+ * source. But a seller who ignores the question is telling us something, and
+ * the buy box that needs the answer declines on its own rather than guessing.
+ */
+export const MAX_UTILITY_ASKS = 1;
 /** Same-day chase on an unanswered offer — same money, just a check-in. */
 export const NUDGE_AFTER_HOURS = 4;
 /** The "we spoke with our partners" raise, once the nudge also goes unanswered. */
@@ -31,10 +41,10 @@ export const PARTNER_BUMP_AFTER_HOURS = 48;
 export const MAX_FOLLOW_UPS = 2;
 
 /** What the model is being asked to write. Drives the drafting instruction. */
-export type DraftIntent = "reply" | "probe" | "offer" | "nudge" | "partner_bump";
+export type DraftIntent = "reply" | "probe" | "utility_probe" | "offer" | "nudge" | "partner_bump";
 
 export type OfferDecision =
-  | { kind: "no_price"; intent: "reply" | "probe"; reason: string }
+  | { kind: "no_price"; intent: "reply" | "probe" | "utility_probe"; reason: string }
   | { kind: "offer"; intent: "offer"; cents: Cents; isCeiling: boolean; meetsSellerAsk: boolean }
   | { kind: "ceiling_reached" };
 
@@ -50,6 +60,13 @@ export function decideOffer(input: {
   lastOfferCents: Cents | null;
   sellerAskCents: Cents | null;
   probesSoFar: number;
+  /**
+   * True when a buyer on this lot prices on utilities and we haven't determined
+   * them. Outside Lee there is no published layer, so the seller is the source.
+   */
+  utilitiesWouldDecide?: boolean;
+  /** How many times we've already asked what utilities the lot has. */
+  utilityAsksSoFar?: number;
 }): OfferDecision {
   const wantsPrice = PRICE_CLASSES.includes(input.klass);
   const probeable = PROBE_CLASSES.includes(input.klass);
@@ -72,6 +89,17 @@ export function decideOffer(input: {
       kind: "no_price",
       intent: "probe",
       reason: `asking for their number (${input.probesSoFar + 1} of ${MAX_PROBES})`,
+    };
+  }
+
+  // Settle utilities before naming a price, but only when a buyer actually
+  // prices on them. If every buyer on this lot ignores water and sewer, asking
+  // spends a round trip and changes nothing — that thread gets a number now.
+  if (input.utilitiesWouldDecide && (input.utilityAsksSoFar ?? 0) < MAX_UTILITY_ASKS) {
+    return {
+      kind: "no_price",
+      intent: "utility_probe",
+      reason: "a buyer prices on utilities and we don't know them yet",
     };
   }
 

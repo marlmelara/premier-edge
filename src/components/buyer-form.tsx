@@ -13,6 +13,8 @@ export type BuyerFormValues = {
   email?: string | null;
   phone?: string | null;
   markets?: string[] | null;
+  preferredTitleName?: string | null;
+  preferredTitleAddress?: string | null;
   notes?: string | null;
   minSqft?: number;
   allowedFloodZones?: string[];
@@ -84,6 +86,12 @@ export function BuyerForm({ initial, onDone }: { initial?: BuyerFormValues; onDo
           </Field>
           <Field label="Markets" hint="Comma separated. Leave blank to buy anywhere.">
             <Input name="markets" defaultValue={(initial?.markets ?? []).join(", ")} placeholder="Lehigh Acres, Port Charlotte" />
+          </Field>
+          <Field label="Preferred title company" hint="Optional. Used on their assignment and on the seller's PSA.">
+            <Input name="preferredTitleName" defaultValue={initial?.preferredTitleName ?? ""} placeholder="Sunshine Title" />
+          </Field>
+          <Field label="Title company address" hint="Optional — a name alone is fine.">
+            <Input name="preferredTitleAddress" defaultValue={initial?.preferredTitleAddress ?? ""} placeholder="123 Main St, Fort Myers FL" />
           </Field>
           <Field label="Anchor %" hint="Where the first offer starts, as a fraction of max">
             <Input name="anchorPct" defaultValue={initial?.anchorPct ?? "0.780"} />

@@ -103,3 +103,21 @@ export async function silenceState(db: Db, conversationId: string): Promise<Sile
 export function followUpsFrom(state: SilenceState): number {
   return Math.max(0, state.outboundSinceReply - 1);
 }
+
+/** How many times we've actually sent a "what utilities does it have?" message. */
+export async function utilityAsksSent(db: Db, conversationId: string): Promise<number> {
+  const [row] = await db
+    .select({ count: sql<number>`count(*)::int` })
+    .from(agentActions)
+    .where(sql`
+      ${agentActions.conversationId} = ${conversationId}
+      AND ${agentActions.type} = 'draft_created'
+      AND ${agentActions.input}->>'intent' = 'utility_probe'
+      AND EXISTS (
+        SELECT 1 FROM ${agentActions} r
+        WHERE r.type IN ('draft_approved', 'draft_edited')
+        AND r.input->>'draftId' = ${agentActions.id}::text
+      )
+    `);
+  return row?.count ?? 0;
+}

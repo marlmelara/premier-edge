@@ -16,6 +16,7 @@ import { formatMoney } from "@/lib/format";
 const INTENT_LABEL: Record<PendingDraft["intent"], string | null> = {
   reply: null,
   probe: "asking their price first",
+  utility_probe: "asking what utilities it has",
   offer: null,
   nudge: "same-day check-in · no new money",
   partner_bump: "partner raise · new number",

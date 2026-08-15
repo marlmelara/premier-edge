@@ -8,7 +8,9 @@ import { AgentRefusal, hasAnthropicKey } from "./anthropic";
 import { classifyInbound } from "./classify";
 import { draftReply } from "./draft";
 import { decideOffer, type OfferDecision } from "./negotiation";
-import { loadOfferCriteria, probesSent } from "./thread-state";
+import { loadOfferCriteria, probesSent, utilityAsksSent } from "./thread-state";
+import { loadCampaignBuilders } from "@/lib/eligibility/verify-parcel";
+import { utilitiesWouldDecide } from "@/lib/eligibility/buy-box";
 import {
   acquireRunLock,
   dollarValidationFailures,
@@ -132,6 +134,27 @@ async function runTurnInner(db: Db, conversationId: string): Promise<AgentRunOut
       : deal.sellerCounter
         ? toCents(deal.sellerCounter)
         : null;
+
+  // A seller telling us "it's on a well" is the authoritative source outside
+  // Lee, where no county publishes a service-area layer. Record it on the
+  // parcel so every buy box prices off it from here on.
+  if ((classification.utilities_water || classification.utilities_sewer) && deal.parcelId) {
+    await db
+      .update(parcels)
+      .set({
+        ...(classification.utilities_water ? { waterSource: classification.utilities_water } : {}),
+        ...(classification.utilities_sewer ? { sewerType: classification.utilities_sewer } : {}),
+        utilityDetail: "stated by the seller",
+        updatedAt: new Date(),
+      })
+      .where(eq(parcels.id, deal.parcelId));
+    await db.insert(agentActions).values({
+      conversationId,
+      type: "utilities_from_seller",
+      input: { parcelId: deal.parcelId },
+      output: { water: classification.utilities_water, sewer: classification.utilities_sewer },
+    });
+  }
 
   if (mustEscalate) {
     const why = lowConfidence
@@ -326,12 +349,28 @@ async function decideMove(
   const criteria = await loadOfferCriteria(db, deal);
   const probes = criteria ? await probesSent(db, conversationId) : 0;
 
+  // Utilities only matter when a buyer prices on them. Loading the parcel's
+  // current answer and the buy boxes tells us whether asking is worth a message
+  // or whether this thread should just carry a number.
+  const parcel = deal?.parcelId
+    ? await db.query.parcels.findFirst({ where: eq(parcels.id, deal.parcelId) })
+    : null;
+  const boxes = deal?.campaignId ? await loadCampaignBuilders(db, deal.campaignId) : [];
+  const needsUtilities =
+    parcel != null &&
+    utilitiesWouldDecide(boxes, {
+      water: (parcel.waterSource as "city" | "well" | null) ?? undefined,
+      sewer: (parcel.sewerType as "city" | "septic" | null) ?? undefined,
+    });
+
   return decideOffer({
     klass,
     criteria,
     lastOfferCents: deal?.lastOffer ? toCents(deal.lastOffer) : null,
     sellerAskCents,
     probesSoFar: probes,
+    utilitiesWouldDecide: needsUtilities,
+    utilityAsksSoFar: await utilityAsksSent(db, conversationId),
   });
 }
 
