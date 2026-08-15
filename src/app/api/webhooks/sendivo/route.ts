@@ -127,8 +127,18 @@ export async function POST(req: NextRequest) {
   }
 }
 
-/** Headers worth keeping. Anything carrying a signature or an event name. */
-const INTERESTING_HEADER = /^(x-|sendivo|svix|webhook|user-agent$|content-type$)/i;
+/**
+ * Headers worth keeping: anything that could carry a signature, an event name,
+ * or a timestamp.
+ */
+const INTERESTING_HEADER = /^(x-sendivo|sendivo|svix|webhook|x-webhook|x-signature|x-hub|x-event|user-agent$|content-type$)/i;
+
+/**
+ * Never store these. The platform injects its own credentials into inbound
+ * requests — `x-vercel-oidc-token`, and a Bearer token nested inside
+ * `x-vercel-sc-headers` — and a diagnostic log is no place for them.
+ */
+const SECRET_HEADER = /(token|authorization|secret|signature-ts|cookie)/i;
 
 /**
  * Log an authenticated delivery with its headers, plus what an HMAC-SHA256 of
@@ -150,7 +160,11 @@ async function logReceipt(db: Db, req: NextRequest, raw: string, body: unknown):
 
     const headers: Record<string, string> = {};
     req.headers.forEach((value, name) => {
-      if (INTERESTING_HEADER.test(name)) headers[name] = value.slice(0, 200);
+      if (!INTERESTING_HEADER.test(name)) return;
+      // A signature header is the whole point, so it survives; a credential
+      // never does, even when it matches the pattern above.
+      if (SECRET_HEADER.test(name) && !/signature$/i.test(name)) return;
+      headers[name] = value.slice(0, 200);
     });
 
     const secret = env().SENDIVO_WEBHOOK_SIGNING_SECRET;
