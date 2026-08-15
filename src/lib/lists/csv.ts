@@ -193,11 +193,22 @@ export type ParsedList = {
   skipped: number;
 };
 
-/** US 10-digit normalization, matching what webhook-schema does for inbound. */
+/**
+ * Phone normalization for list rows.
+ *
+ * Must produce the SAME shape as `normalizePhone` in webhook-schema — E.164,
+ * `+1XXXXXXXXXX`. `contacts.phone` is unique and `opt_outs` is keyed by phone,
+ * so a list that stored bare 10-digit numbers would create a second contact row
+ * for a seller we already know, and — much worse — would miss the opt-out they
+ * recorded by texting STOP.
+ *
+ * Returns null rather than a guess for anything that isn't a US number, so the
+ * caller can count and report the rows it skipped.
+ */
 export function normalizeListPhone(raw: string): string | null {
   const digits = raw.replace(/\D/g, "");
-  if (digits.length === 11 && digits.startsWith("1")) return digits.slice(1);
-  if (digits.length === 10) return digits;
+  if (digits.length === 11 && digits.startsWith("1")) return `+${digits}`;
+  if (digits.length === 10) return `+1${digits}`;
   return null;
 }
 

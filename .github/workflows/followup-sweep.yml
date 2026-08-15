@@ -54,3 +54,23 @@ jobs:
           # an email — unlike missing setup, it means follow-ups are silently
           # not going out.
           [ "$status" = "200" ] || { echo "::error::sweep returned HTTP $status"; exit 1; }
+
+      - name: Sync Sendivo SMS logs
+        # Hobby caps vercel.json at 2 crons and both are taken, so the sync
+        # rides this schedule instead. Rolling window — it dedupes on Sendivo's
+        # message_id, so overlapping runs are free.
+        env:
+          BASE_URL: ${{ vars.PREMIER_EDGE_URL || 'https://premier-edge-theta.vercel.app' }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          if [ -z "$CRON_SECRET" ]; then
+            echo "::warning::CRON_SECRET is not set, so the Sendivo sync was skipped."
+            exit 0
+          fi
+
+          response=$(curl -sS -w "\n%{http_code}" \
+            -H "Authorization: Bearer $CRON_SECRET" \
+            "$BASE_URL/api/cron/sync-sendivo?days=3")
+          status=$(echo "$response" | tail -n1)
+          echo "$response" | sed '$d'
+          [ "$status" = "200" ] || { echo "::error::sync returned HTTP $status"; exit 1; }

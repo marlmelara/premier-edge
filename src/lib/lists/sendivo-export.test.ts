@@ -11,7 +11,7 @@ describe("parseOptOutExport", () => {
     ].join("\n");
     const parsed = parseOptOutExport(csv);
     expect(parsed.mode).toBe("flag_column");
-    expect(parsed.rows.map((r) => r.phone)).toEqual(["2395550101", "2395550103"]);
+    expect(parsed.rows.map((r) => r.phone)).toEqual(["+12395550101", "+12395550103"]);
   });
 
   it("treats a file with no flag column as an opt-out list", () => {
@@ -46,7 +46,7 @@ describe("parseMessageExport", () => {
     const parsed = parseMessageExport(csv);
     expect(parsed.rows).toHaveLength(2);
     expect(parsed.rows[0]).toMatchObject({
-      phone: "2395550101",
+      phone: "+12395550101",
       direction: "inbound",
       body: "We will sell it for $19,000",
       name: "Ana Ruiz",

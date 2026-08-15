@@ -164,7 +164,63 @@ export const sendivoBlast = z
   })
   .loose();
 
+/**
+ * One row of the SMS Logs screen. Verified live Aug 15 2026: this is the only
+ * readable message endpoint on the API, and it returns **outbound only** — a
+ * six-week walk produced 10,153 rows, every one from one of our numbers.
+ * Seller replies arrive solely by webhook.
+ *
+ * `message_id` is the same identifier the inbound webhook carries, so it
+ * doubles as our dedupe key across both paths.
+ */
+export const sendivoSmsLog = z
+  .object({
+    id: z.number(),
+    from_number: z.string(),
+    to_number: z.string(),
+    message_content: z.string(),
+    segments: z.number().nullish(),
+    status: z.string().nullish(),
+    error_description: z.string().nullish(),
+    campaign: z.object({ id: z.number(), name: z.string() }).loose().nullish(),
+    blast: z.object({ id: z.number(), name: z.string().nullish() }).loose().nullish(),
+    message_id: z.string().nullish(),
+    created_at: z.string(),
+  })
+  .loose();
+export type SendivoSmsLog = z.infer<typeof sendivoSmsLog>;
+
+const smsLogPage = z
+  .object({
+    logs: z.array(sendivoSmsLog),
+    pagination: z
+      .object({ current_page: z.number().nullish(), per_page: z.number().nullish(), has_more: z.boolean().nullish() })
+      .loose()
+      .nullish(),
+  })
+  .loose();
+
 // --- Client surface ---
+
+/**
+ * SMS logs for a date range. The API caps the range at **7 days** per request,
+ * so callers walking a longer history must window it themselves.
+ */
+export function getSmsLogs(params: {
+  startDate: string;
+  endDate: string;
+  page?: number;
+  perPage?: number;
+}) {
+  return request(smsLogPage, "/sms/logs", {
+    query: {
+      start_date: params.startDate,
+      end_date: params.endDate,
+      page: params.page,
+      per_page: params.perPage,
+    },
+  });
+}
 
 export function getPhoneNumbers() {
   return request(z.array(sendivoPhoneNumber), "/phone-numbers");

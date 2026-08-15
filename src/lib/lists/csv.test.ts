@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { mapHeaders, normalizeListPhone, parseCsv, parseList } from "./csv";
+import { normalizePhone } from "@/lib/sendivo/webhook-schema";
 
 describe("parseCsv", () => {
   it("handles quoted fields containing commas — every land list has them", () => {
+    // parseCsv is the raw reader — it splits cells, it does not normalize them.
     const rows = parseCsv('phone,address\n2395550101,"1234 SW 5th Ave, Cape Coral, FL"');
     expect(rows[1]).toEqual(["2395550101", "1234 SW 5th Ave, Cape Coral, FL"]);
   });
@@ -55,15 +57,24 @@ describe("mapHeaders", () => {
 
 describe("normalizeListPhone", () => {
   it("accepts the formats a list actually contains", () => {
-    expect(normalizeListPhone("(239) 555-0101")).toBe("2395550101");
-    expect(normalizeListPhone("+1 239 555 0101")).toBe("2395550101");
-    expect(normalizeListPhone("2395550101")).toBe("2395550101");
+    expect(normalizeListPhone("(239) 555-0101")).toBe("+12395550101");
+    expect(normalizeListPhone("+1 239 555 0101")).toBe("+12395550101");
+    expect(normalizeListPhone("+12395550101")).toBe("+12395550101");
   });
 
   it("rejects anything that isn't a US number", () => {
     expect(normalizeListPhone("555-0101")).toBeNull();
     expect(normalizeListPhone("")).toBeNull();
     expect(normalizeListPhone("n/a")).toBeNull();
+  });
+
+  it("agrees exactly with the inbound normalizer", () => {
+    // contacts.phone is unique and opt_outs is keyed by phone. If these two
+    // ever disagree, one seller becomes two rows and a STOP recorded by SMS
+    // stops suppressing the list import — the compliance failure, not a typo.
+    for (const raw of ["(239) 555-0101", "239-555-0101", "+1 239 555 0101", "12395550101", "2395550101"]) {
+      expect(normalizeListPhone(raw)).toBe(normalizePhone(raw));
+    }
   });
 });
 
@@ -78,7 +89,7 @@ describe("parseList", () => {
     const parsed = parseList(csv);
     expect(parsed.rows).toHaveLength(1);
     expect(parsed.rows[0]).toMatchObject({
-      phone: "2395550101",
+      phone: "+12395550101",
       name: "Ana Ruiz",
       propertyAddress: "1234 SW 5th Ave",
       parcelId: "354426L3121060010",

@@ -265,3 +265,15 @@ Both idempotent. Rows missing a phone, body, or readable direction are reported,
 Webhook failure is silent by construction: the Deal Room just stays empty while Sendivo's inbox fills. It went unnoticed through the first three weeks of live campaigns.
 
 Two changes make it loud. A rejected call now writes `sendivo_webhook_rejected` to `agent_actions` (shape only — token length, header vs query, UA, IP; never the body, which is unauthenticated; capped at 20/hour since the URL is public). And the campaigns page carries a status strip that distinguishes the two failure modes that look identical from the outside: **rejecting** (something is calling with the wrong token — the URL is missing its `?token=`) versus **quiet** (nothing is calling at all — Sendivo isn't configured to send).
+
+## 11g. Sendivo SMS-log sync — DOC AMENDMENT (Aug 15 2026)
+
+`GET /sms/logs` is the one readable message endpoint Sendivo exposes — 7-day windows, paginated to 1000. Verified live: it is **outbound only**. A six-week walk returned 10,153 rows, every one from one of our own numbers, zero inbound. Seller replies arrive solely by webhook, and no amount of polling changes that.
+
+It is still the missing piece, because every number we have ever texted is a `to_number` in those logs. That reconstructs the blast audience the API refuses to enumerate any other way — 9,780 contacts on the first production run.
+
+Design points:
+- **Contacts for everyone, threads for almost nobody.** A blast recipient who never replied is a contact, not a conversation. Opening ~9,800 threads would bury the handful of real negotiations in the Deal Room list and the pipeline, neither of which filters them. Outbound messages are held until the contact has a thread; when the webhook creates one on their first reply, the next sync backfills everything we ever sent them into it.
+- **Dedupe on `message_id`**, the same identifier the webhook carries, so the sync and the webhook can never double-insert.
+- **Phone format is E.164 everywhere.** `normalizeListPhone` originally returned bare 10 digits while the webhook returned `+1…`. Since `contacts.phone` is unique and `opt_outs` is keyed by phone, that split one seller into two rows and — the real damage — let a STOP recorded by SMS fail to suppress a list import. A test now asserts the two normalizers agree.
+- Scheduled from the GitHub Actions workflow rather than `vercel.json`, since Hobby caps that at 2 crons and both are taken.
