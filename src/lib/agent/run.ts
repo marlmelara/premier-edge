@@ -1,6 +1,6 @@
-import { desc, eq } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 import type { Db } from "@/db";
-import { agentActions, contacts, conversations, deals, messages, parcels } from "@/db/schema";
+import { agentActions, contactParcels, contacts, conversations, deals, messages, parcels } from "@/db/schema";
 import { fromCents, toCents } from "@/lib/eligibility/offer-math";
 import { sendUrgentAlert } from "@/lib/alerts";
 import { formatPhone } from "@/lib/format";
@@ -162,6 +162,40 @@ async function runTurnInner(db: Db, conversationId: string): Promise<AgentRunOut
     return { ran: true, classification: "accepted", state: "ACCEPTED", drafted: false, escalated: false };
   }
 
+  // Wrong number: they don't own it. Unlinking the lot is the whole point —
+  // otherwise the next list import or auto-attach hands us the same bad pairing
+  // and we text them about it again.
+  if (classification.classification === "wrong_person") {
+    if (deal.parcelId) {
+      await db
+        .delete(contactParcels)
+        .where(and(eq(contactParcels.contactId, deal.contactId), eq(contactParcels.parcelId, deal.parcelId)));
+    }
+    await db
+      .update(deals)
+      .set({
+        stage: "dead",
+        deadReason: "wrong person — not the owner",
+        parcelId: null,
+        verdict: "pending",
+        matchedBuilderId: null,
+        maxOffer: null,
+        anchor: null,
+        updatedAt: new Date(),
+      })
+      .where(eq(deals.id, deal.id));
+    return { ran: true, classification: "wrong_person", state: "DEAD", drafted: false, escalated: false };
+  }
+
+  // Someone swearing at a cold text is not a lead. No reply, no notification.
+  if (classification.classification === "hostile") {
+    await db
+      .update(deals)
+      .set({ stage: "dead", deadReason: "hostile reply", updatedAt: new Date() })
+      .where(eq(deals.id, deal.id));
+    return { ran: true, classification: "hostile", state: "DEAD", drafted: false, escalated: false };
+  }
+
   if (classification.classification === "not_interested") {
     await db
       .update(deals)
@@ -183,8 +217,25 @@ async function runTurnInner(db: Db, conversationId: string): Promise<AgentRunOut
   // --- Code decides the money, if any ---
   const decision = await decideMove(db, deal.id, conversationId, classification.classification, sellerAskCents);
   if (decision.kind === "ceiling_reached") {
-    await escalate(db, conversationId, "ceiling reached — no room left on the concession ladder", contact?.phone);
-    return { ran: true, classification: classification.classification, state: "ESCALATED", drafted: false, escalated: true };
+    // The ladder is spent and they still want more. That is not a problem to
+    // solve, it is a price we can't pay: label them, keep the lot in the land
+    // bank with what they asked for, and move on. A buyer whose numbers work
+    // later is exactly what the land bank is for.
+    await db
+      .update(deals)
+      .set({ stage: "dead", deadReason: "wants more than our ceiling", updatedAt: new Date() })
+      .where(eq(deals.id, deal.id));
+    if (contact) {
+      const labels = new Set([...(contact.labels ?? []), "Price dreamer"]);
+      await db.update(contacts).set({ labels: [...labels], updatedAt: new Date() }).where(eq(contacts.id, contact.id));
+    }
+    await db.insert(agentActions).values({
+      conversationId,
+      type: "ceiling_reached",
+      input: { dealId: deal.id, sellerAskCents },
+      output: { outcome: "dead — land bank retains the lot and their asking price" },
+    });
+    return { ran: true, classification: classification.classification, state: "DEAD", drafted: false, escalated: false };
   }
   const authorizedCents = decision.kind === "offer" ? decision.cents : null;
 

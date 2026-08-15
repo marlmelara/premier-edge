@@ -6,8 +6,13 @@ describe("nextState", () => {
     const states: ConversationState[] = ["NEW", "QUALIFYING", "OFFER_SENT", "NEGOTIATING"];
     for (const state of states) {
       expect(nextState(state, "opt_out")).toBe("OPTED_OUT");
+      // Only a message we could not place is worth a human's attention.
       expect(nextState(state, "off_script")).toBe("ESCALATED");
-      expect(nextState(state, "wrong_person")).toBe("ESCALATED");
+      // Wrong number and hostility end the thread on their own. Escalating them
+      // spends attention on outcomes that are already decided, and an alert
+      // that usually needs no action is one you learn to ignore.
+      expect(nextState(state, "wrong_person")).toBe("DEAD");
+      expect(nextState(state, "hostile")).toBe("DEAD");
       expect(nextState(state, "not_interested")).toBe("DEAD");
     }
   });

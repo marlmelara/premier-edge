@@ -70,13 +70,35 @@ export const INBOUND_CLASSES = [
 
 export type InboundClass = (typeof INBOUND_CLASSES)[number];
 
-/** Classes that always stop the machine and reach Marlon. */
-export const ESCALATING_CLASSES: InboundClass[] = ["wrong_person", "off_script", "hostile"];
+/**
+ * Classes that stop the machine and reach Marlon (policy revised Aug 15 2026).
+ *
+ * Escalation is expensive: it costs attention, and an escalation that fires on
+ * something with an obvious answer trains you to ignore the ones that matter.
+ * Only `off_script` survives here — by definition it is a message we could not
+ * place, which is exactly when a human should look.
+ *
+ * The two that were removed have clear, automatic answers:
+ * - `wrong_person`: they don't own it. Unlink the lot from that contact so we
+ *   never text them about it again, mark the deal dead, done.
+ * - `hostile`: someone swearing at a cold text is not interested. Mark them
+ *   dead and stop. Nothing a human does here changes the outcome, and dwelling
+ *   on it is how you end up replying to an angry stranger.
+ */
+export const ESCALATING_CLASSES: InboundClass[] = ["off_script"];
+
+/**
+ * Classes that end the conversation on their own. Terminal, but routine — the
+ * difference between "this is over" and "someone needs to look at this".
+ */
+export const SELF_RESOLVING_CLASSES: InboundClass[] = ["wrong_person", "hostile"];
 
 /** Where a classified inbound moves the conversation, given where it is now. */
 export function nextState(current: ConversationState, klass: InboundClass): ConversationState {
   if (klass === "opt_out") return "OPTED_OUT";
   if (ESCALATING_CLASSES.includes(klass)) return "ESCALATED";
+  // Wrong number and hostility both end the thread without anyone's attention.
+  if (SELF_RESOLVING_CLASSES.includes(klass)) return "DEAD";
   if (klass === "not_interested") return "DEAD";
   if (klass === "accepted") return "ACCEPTED";
 
