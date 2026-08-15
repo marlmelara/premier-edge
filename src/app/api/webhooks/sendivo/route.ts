@@ -8,7 +8,7 @@ import { runAgentTurn } from "@/lib/agent/run";
 import { autoAttachFromList } from "@/lib/deals/attach-parcel";
 import { getContactByPhone } from "@/lib/sendivo/client";
 import { ingestInboundMessage, mapSendivoContact } from "@/lib/sendivo/ingest";
-import { classifyWebhook } from "@/lib/sendivo/webhook-schema";
+import { classifyWebhook, verifyWebhookSignature } from "@/lib/sendivo/webhook-schema";
 
 /**
  * The agent turn runs inline here and makes two model calls, which take longer
@@ -58,6 +58,35 @@ export async function POST(req: NextRequest) {
   }
 
   const db = getDb();
+
+  // Signature check (Sendivo: HMAC-SHA256 over `timestamp + "." + body`).
+  // Only enforced when the secret is configured, so the URL token remains the
+  // sole gate until it is — but once set, a bad signature is rejected outright.
+  const signingSecret = env().SENDIVO_WEBHOOK_SIGNING_SECRET;
+  if (signingSecret) {
+    const check = verifyWebhookSignature({
+      raw,
+      signatureHeader: req.headers.get("x-sendivo-signature"),
+      timestampHeader: req.headers.get("x-sendivo-timestamp"),
+      secret: signingSecret,
+    });
+    if (!check.ok) {
+      await db.insert(agentActions).values({
+        type: "sendivo_webhook_bad_signature",
+        input: {
+          reason: check.reason,
+          event: req.headers.get("x-sendivo-event"),
+          presented: req.headers.get("x-sendivo-signature"),
+          timestamp: req.headers.get("x-sendivo-timestamp"),
+        },
+        // The exact bytes, so a digest that disagrees can be reproduced offline
+        // instead of costing another round trip. The request is already
+        // token-authenticated, so this is Sendivo's own payload.
+        output: { raw: raw.slice(0, 4000) },
+      });
+      return NextResponse.json({ error: "bad signature", reason: check.reason }, { status: 401 });
+    }
+  }
 
   // Record every authenticated delivery, headers included.
   //
@@ -117,6 +146,15 @@ export async function POST(req: NextRequest) {
         .where(eq(messages.sendivoMessageId, classified.sendivoMessageId))
         .returning({ id: messages.id });
       return NextResponse.json({ ok: true, outcome: "status_updated", matched: updated.length }, { status: 200 });
+    }
+
+    case "ignored": {
+      // A recognized event we don't consume, or Sendivo's own Send Test. Not a
+      // failure, and deliberately not logged as one.
+      return NextResponse.json(
+        { ok: true, outcome: "ignored", event: classified.event, reason: classified.reason },
+        { status: 200 },
+      );
     }
 
     case "unknown": {

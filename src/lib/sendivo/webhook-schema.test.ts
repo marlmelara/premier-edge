@@ -1,5 +1,12 @@
+import { createHmac } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { classifyWebhook, isOptOutMessage, normalizePhone } from "./webhook-schema";
+import {
+  SIGNATURE_TOLERANCE_SECONDS,
+  classifyWebhook,
+  isOptOutMessage,
+  normalizePhone,
+  verifyWebhookSignature,
+} from "./webhook-schema";
 
 describe("classifyWebhook", () => {
   it("classifies a nested inbound payload", () => {
@@ -97,5 +104,111 @@ describe("isOptOutMessage", () => {
   it("does not flag messages that merely contain a keyword", () => {
     expect(isOptOutMessage("Don't stop texting me, I'm interested")).toBe(false);
     expect(isOptOutMessage("I want to cancel the showing but keep talking")).toBe(false);
+  });
+});
+
+/**
+ * The real Sendivo envelope, captured from a live Send Test on Aug 15 2026.
+ * The previous classifier returned "unknown" for this — it only looked at the
+ * top level and at `message`, never at `data` — so every seller reply would
+ * have been dropped even once delivery worked.
+ */
+const REAL_INBOUND = {
+  test: true,
+  event: "inbound_message",
+  timestamp: "2026-08-15T20:23:21+00:00",
+  data: {
+    to: "+14155559999",
+    from: "+14155551234",
+    contact: { id: 12345, last_name: "Contact", first_name: "Test", phone_number: "+14155551234" },
+    message: "This is a test inbound message from Sendivo.",
+    locationId: null,
+    message_id: "test_CdUUVYfJapYfKPVU",
+    received_at: "2026-08-15T20:23:21+00:00",
+    conversation_id: 67890,
+    sub_account_name: "Example Sub Account",
+  },
+};
+
+describe("classifyWebhook — the documented Sendivo envelope", () => {
+  it("does not ingest Sendivo's own Send Test", () => {
+    // Its numbers are +1415555xxxx placeholders. Ingesting them would invent a
+    // seller and open a thread against land nobody owns.
+    const result = classifyWebhook(REAL_INBOUND);
+    expect(result.kind).toBe("ignored");
+    if (result.kind === "ignored") expect(result.reason).toBe("test delivery");
+  });
+
+  it("reads a real inbound reply out of data", () => {
+    const { test: _test, ...live } = REAL_INBOUND;
+    const result = classifyWebhook(live);
+    expect(result.kind).toBe("inbound");
+    if (result.kind === "inbound") {
+      expect(result.sendivoMessageId).toBe("test_CdUUVYfJapYfKPVU");
+      expect(result.from).toBe("+14155551234");
+      expect(result.body).toBe("This is a test inbound message from Sendivo.");
+      expect(result.conversationId).toBe("67890");
+      expect(result.contactId).toBe("12345");
+    }
+  });
+
+  it("reads a delivery status out of data", () => {
+    const result = classifyWebhook({
+      event: "delivery_status",
+      data: { message_id: "abc123", to: "+14155551234", status: "delivered", status_group: "DELIVERED" },
+    });
+    expect(result.kind).toBe("delivery_status");
+    if (result.kind === "delivery_status") expect(result.status).toBe("delivered");
+  });
+
+  it("names the events it deliberately skips instead of calling them unknown", () => {
+    // Keeps the unrecognized log meaningful — it should only hold surprises.
+    for (const event of ["phone_number_ready", "deal_status_updated"]) {
+      expect(classifyWebhook({ event, data: { anything: true } }).kind).toBe("ignored");
+    }
+  });
+});
+
+describe("verifyWebhookSignature", () => {
+  const secret = "whsec_test_secret";
+  const raw = '{"event":"inbound_message","data":{"message":"hi"}}';
+  const ts = String(Math.floor(Date.now() / 1000));
+  const sign = (t: string, body: string, s = secret) =>
+    "sha256=" + createHmac("sha256", s).update(`${t}.${body}`).digest("hex");
+
+  it("accepts a correctly signed delivery", () => {
+    expect(
+      verifyWebhookSignature({ raw, signatureHeader: sign(ts, raw), timestampHeader: ts, secret }).ok,
+    ).toBe(true);
+  });
+
+  it("rejects a body that changed after signing", () => {
+    const tampered = raw.replace("hi", "we can do 15");
+    const result = verifyWebhookSignature({ raw: tampered, signatureHeader: sign(ts, raw), timestampHeader: ts, secret });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe("mismatch");
+  });
+
+  it("rejects a signature made with the wrong secret", () => {
+    const result = verifyWebhookSignature({
+      raw,
+      signatureHeader: sign(ts, raw, "whsec_wrong"),
+      timestampHeader: ts,
+      secret,
+    });
+    expect(result.ok).toBe(false);
+  });
+
+  it("rejects a replayed delivery outside the tolerance window", () => {
+    const old = String(Math.floor(Date.now() / 1000) - SIGNATURE_TOLERANCE_SECONDS - 60);
+    const result = verifyWebhookSignature({ raw, signatureHeader: sign(old, raw), timestampHeader: old, secret });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe("stale");
+  });
+
+  it("rejects a delivery with no signature at all", () => {
+    const result = verifyWebhookSignature({ raw, signatureHeader: null, timestampHeader: ts, secret });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe("missing_signature");
   });
 });
