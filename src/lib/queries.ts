@@ -302,16 +302,22 @@ export async function listSellers(filters: SellerFilters = {}) {
     if (match) where.push(match);
   }
   if (filters.optedOut !== undefined) where.push(eq(contacts.optedOut, filters.optedOut));
-  if (filters.replied) {
-    where.push(sql`EXISTS (
-      SELECT 1 FROM ${messages} m
-      JOIN ${conversations} cv ON m.conversation_id = cv.id
-      JOIN ${deals} d ON cv.deal_id = d.id
-      WHERE d.contact_id = ${contacts.id} AND m.direction = 'inbound')`);
-  }
-  if (filters.withParcel) {
-    where.push(sql`EXISTS (SELECT 1 FROM ${contactParcels} cp WHERE cp.contact_id = ${contacts.id})`);
-  }
+
+  // Correlated subqueries are written with an explicit "contacts"."id" rather
+  // than a Drizzle column reference: inside a subquery that joins
+  // contact_parcels, an unqualified "id" is ambiguous and Postgres rejects the
+  // whole statement (42702).
+  const OUTER = sql.raw('"contacts"."id"');
+
+  const parcelCount = sql<number>`(SELECT count(*)::int FROM ${contactParcels} cp WHERE cp.contact_id = ${OUTER})`;
+  const inboundCount = sql<number>`(
+    SELECT count(*)::int FROM ${messages} m
+    JOIN ${conversations} cv ON m.conversation_id = cv.id
+    JOIN ${deals} d ON cv.deal_id = d.id
+    WHERE d.contact_id = ${OUTER} AND m.direction = 'inbound')`;
+
+  if (filters.replied) where.push(sql`${inboundCount} > 0`);
+  if (filters.withParcel) where.push(sql`${parcelCount} > 0`);
 
   const condition = where.length ? and(...where) : undefined;
 
@@ -322,22 +328,19 @@ export async function listSellers(filters: SellerFilters = {}) {
         name: contacts.name,
         phone: contacts.phone,
         source: contacts.source,
+        labels: contacts.labels,
         optedOut: contacts.optedOut,
         updatedAt: contacts.updatedAt,
-        parcelCount: sql<number>`(SELECT count(*)::int FROM ${contactParcels} cp WHERE cp.contact_id = ${contacts.id})`,
+        parcelCount,
+        inboundCount,
         firstAddress: sql<string | null>`(
           SELECT p.address FROM ${contactParcels} cp
           JOIN ${parcels} p ON p.id = cp.parcel_id
-          WHERE cp.contact_id = ${contacts.id} LIMIT 1)`,
-        inboundCount: sql<number>`(
-          SELECT count(*)::int FROM ${messages} m
-          JOIN ${conversations} cv ON m.conversation_id = cv.id
-          JOIN ${deals} d ON cv.deal_id = d.id
-          WHERE d.contact_id = ${contacts.id} AND m.direction = 'inbound')`,
+          WHERE cp.contact_id = ${OUTER} LIMIT 1)`,
         conversationId: sql<string | null>`(
           SELECT cv.id FROM ${conversations} cv
           JOIN ${deals} d ON cv.deal_id = d.id
-          WHERE d.contact_id = ${contacts.id} ORDER BY cv.created_at DESC LIMIT 1)`,
+          WHERE d.contact_id = ${OUTER} ORDER BY cv.created_at DESC LIMIT 1)`,
       })
       .from(contacts)
       .where(condition)

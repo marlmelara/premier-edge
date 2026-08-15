@@ -186,10 +186,23 @@ async function recordChecks(
       summary: m.outcomes.find((o) => o.kind === kind)?.outcome.summary,
     }));
 
-  const worst = (kind: "fema" | "nwi" | "sqft"): CheckOutcome["result"] => {
+  /**
+   * A check row records whether we *determined the fact*, which is a different
+   * question from whether a buyer accepts it.
+   *
+   * `factKnown` is false only when the underlying service failed — FEMA down,
+   * no geometry to query. With no buyers attached there is nothing to judge
+   * against, but the fact is still known: "AE zone" and "10,019 sqft" are true
+   * regardless of who is buying. Reporting that as an error made a fully
+   * successful lookup render as three warning triangles, which is noise exactly
+   * where the signal has to be trustworthy.
+   */
+  const worst = (kind: "fema" | "nwi" | "sqft", factKnown: boolean): CheckOutcome["result"] => {
+    if (!factKnown) return "error";
+    if (matches.length === 0) return "pass";
     const results = matches.map((m) => m.outcomes.find((o) => o.kind === kind)?.outcome.result);
     if (results.includes("pass")) return "pass";
-    if (results.includes("error") || results.length === 0) return "error";
+    if (results.includes("error")) return "error";
     return "fail";
   };
 
@@ -203,7 +216,7 @@ async function recordChecks(
     {
       parcelId: parcelRowId,
       kind: "fema" as const,
-      result: flood.ok ? worst("fema") : ("error" as const),
+      result: worst("fema", flood.ok),
       detail: flood.ok
         ? { summary: [...new Set(facts.floodZones.map((z) => z.zone))].join(", ") || "no NFHL coverage", zones: facts.floodZones, byBuyer: perBuyer("fema") }
         : { summary: "service unavailable", error: flood.error },
@@ -211,7 +224,7 @@ async function recordChecks(
     {
       parcelId: parcelRowId,
       kind: "nwi" as const,
-      result: wet.ok ? worst("nwi") : ("error" as const),
+      result: worst("nwi", wet.ok),
       detail: wet.ok
         ? { summary: facts.wetlands.length === 0 ? "clear" : "intersects", hits: facts.wetlands, byBuyer: perBuyer("nwi") }
         : { summary: "service unavailable", error: wet.error },
@@ -219,7 +232,7 @@ async function recordChecks(
     {
       parcelId: parcelRowId,
       kind: "sqft" as const,
-      result: worst("sqft"),
+      result: worst("sqft", facts.sqft !== undefined),
       detail: { summary: facts.sqft ? `${facts.sqft.toLocaleString("en-US")} sqft` : "size unknown", sqft: facts.sqft, byBuyer: perBuyer("sqft") },
     },
   ]);

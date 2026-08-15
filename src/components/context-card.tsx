@@ -4,6 +4,7 @@ import { crossCheckOwner } from "@/lib/contracts/owner-xcheck";
 import { Badge } from "@/components/ui/badge";
 import { ParcelMap } from "@/components/parcel-map";
 import { ParcelManager, type OwnedParcel } from "@/components/parcel-manager";
+import { LabelPicker } from "@/components/label-picker";
 import { anchorOffer, fromCents, maxOffer, roomLeft, toCents, type OfferCriteria } from "@/lib/eligibility/offer-math";
 import { femaMscUrl } from "@/lib/eligibility/fema";
 import { nwiMapperUrl } from "@/lib/eligibility/nwi";
@@ -153,11 +154,15 @@ export function ContextCard({
         {deal.verdict === "pass"
           ? "ALL BOXES CHECKED ✅"
           : deal.verdict === "fail"
-            ? `FAILED: ${failedKinds.join(", ").toLowerCase()} ❌`
+            ? `DOESN'T QUALIFY: ${failedKinds.join(", ").toLowerCase()} — land bank only`
             : errorKinds.length
-              ? `PENDING: ${errorKinds.join(", ").toLowerCase()} ⚠️`
-              : "PENDING ⚠️"}
+              ? `COULDN'T CHECK: ${errorKinds.join(", ").toLowerCase()} — re-run ⚠️`
+              : buyerMatches.length === 0
+                ? "CHECKS DONE — no buyer to judge against"
+                : "PENDING ⚠️"}
       </div>
+
+      {contact && <LabelPicker contactId={contact.id} current={contact.labels ?? []} />}
 
       {/* Which buyer wants it — the point of the whole check */}
       <div className="space-y-1">

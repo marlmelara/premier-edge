@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { Badge } from "@/components/ui/badge";
 import { formatPhone, timeAgo } from "@/lib/format";
+import { styleFor } from "@/lib/labels";
 import { listSellers } from "@/lib/queries";
 
 export const dynamic = "force-dynamic";
@@ -111,6 +112,14 @@ export default async function SellersPage({
                         opted out
                       </Badge>
                     )}
+                    {row.labels?.map((label) => (
+                      <span
+                        key={label}
+                        className={`ml-1 rounded border px-1.5 py-0.5 text-[10px] ${styleFor(label)}`}
+                      >
+                        {label}
+                      </span>
+                    ))}
                   </td>
                   <td className="px-3 py-2 text-muted-foreground">
                     {row.firstAddress ?? (row.parcelCount > 0 ? `${row.parcelCount} lot(s)` : "—")}
