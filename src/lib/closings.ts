@@ -1,4 +1,4 @@
-import { and, eq, gte, isNotNull, lt, or, sql } from "drizzle-orm";
+import { and, eq, isNotNull, or, sql } from "drizzle-orm";
 import { getDb } from "@/db";
 import { contacts, deals, parcels } from "@/db/schema";
 import { toDayString, type DateRange } from "./date-range";
@@ -59,8 +59,11 @@ export async function listClosings(range: DateRange): Promise<ClosingsSummary> {
       and(
         eq(deals.stage, "closed"),
         or(isNotNull(deals.closedAt), isNotNull(deals.closingDate)),
-        gte(sql`COALESCE(${deals.closedAt}, ${deals.closingDate})`, range.from),
-        lt(sql`COALESCE(${deals.closedAt}, ${deals.closingDate})`, range.to),
+        // The comparison lives inside the template with an explicit cast:
+        // gte()/lt() against a raw sql expression have no column type to infer
+        // from, so Drizzle hands the driver a Date object it can't serialize.
+        sql`COALESCE(${deals.closedAt}, ${deals.closingDate}) >= ${range.from.toISOString()}::timestamptz`,
+        sql`COALESCE(${deals.closedAt}, ${deals.closingDate}) < ${range.to.toISOString()}::timestamptz`,
       ),
     );
 
@@ -117,4 +120,66 @@ function summarize(rows: ClosingRow[]): ClosingsSummary {
     byDay,
     byMonth,
   };
+}
+
+export type UpcomingItem = {
+  dealId: string;
+  day: string;
+  kind: "closing" | "contract";
+  label: string;
+  conversationId: string | null;
+};
+
+/**
+ * What's coming, not what happened.
+ *
+ * The calendar earns its place by answering "do I have something to get to",
+ * which past money alone can't do. Two kinds land here: closings with a date
+ * set, and contracts that have gone out and not come back — the two things
+ * that quietly slip.
+ */
+export async function listUpcoming(range: DateRange): Promise<UpcomingItem[]> {
+  const db = getDb();
+
+  const rows = await db
+    .select({
+      dealId: deals.id,
+      closingDate: deals.closingDate,
+      stage: deals.stage,
+      address: parcels.address,
+      sellerName: contacts.name,
+      sellerPhone: contacts.phone,
+      conversationId: sql<string | null>`(
+        SELECT cv.id FROM conversations cv WHERE cv.deal_id = ${deals.id}
+        ORDER BY cv.created_at DESC LIMIT 1)`,
+      pendingContracts: sql<number>`(
+        SELECT count(*)::int FROM contracts c
+        WHERE c.deal_id = ${deals.id} AND c.status IS DISTINCT FROM 'completed')`,
+    })
+    .from(deals)
+    .innerJoin(contacts, eq(deals.contactId, contacts.id))
+    .leftJoin(parcels, eq(deals.parcelId, parcels.id))
+    .where(
+      and(
+        // Anything still live. A closed or dead deal has nothing left to do.
+        sql`${deals.stage} NOT IN ('closed', 'dead')`,
+        isNotNull(deals.closingDate),
+        sql`${deals.closingDate} >= ${range.from.toISOString()}::timestamptz`,
+        sql`${deals.closingDate} < ${range.to.toISOString()}::timestamptz`,
+      ),
+    );
+
+  const items: UpcomingItem[] = [];
+  for (const r of rows) {
+    if (!r.closingDate) continue;
+    const who = r.address ?? r.sellerName ?? r.sellerPhone;
+    items.push({
+      dealId: r.dealId,
+      day: toDayString(new Date(r.closingDate)),
+      kind: r.pendingContracts > 0 ? "contract" : "closing",
+      label: r.pendingContracts > 0 ? `${who} — contract out` : `${who} — closing`,
+      conversationId: r.conversationId,
+    });
+  }
+  return items.sort((a, b) => a.day.localeCompare(b.day));
 }

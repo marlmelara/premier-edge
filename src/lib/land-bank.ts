@@ -156,3 +156,45 @@ export async function landBankCounties(): Promise<string[]> {
     .where(isNotNull(parcels.lastCheckedAt));
   return rows.map((r) => r.county).sort();
 }
+
+/**
+ * The same land bank, but with geometry — for the map view.
+ *
+ * Kept separate from `searchLandBank` because polygons are heavy: a table of
+ * 300 rows doesn't want them, and a map of 300 lots needs nothing else.
+ */
+export async function landBankGeometry(filters: LandBankFilters = {}) {
+  const db = getDb();
+  const where: SQL[] = [isNotNull(parcels.lastCheckedAt), isNotNull(parcels.geometry)];
+
+  if (filters.county) where.push(eq(parcels.county, filters.county));
+  if (filters.minSqft) where.push(gte(parcels.sqft, filters.minSqft));
+  if (filters.wetlands === "only") where.push(eq(parcels.wetlandsIntersects, true));
+  if (filters.wetlands === "exclude") where.push(eq(parcels.wetlandsIntersects, false));
+  if (filters.floodZones?.length) {
+    where.push(sql`${parcels.floodZones} && ${filters.floodZones}::text[]`);
+  }
+
+  return db
+    .select({
+      id: parcels.id,
+      parcelId: parcels.parcelId,
+      address: parcels.address,
+      county: parcels.county,
+      sqft: parcels.sqft,
+      floodZones: parcels.floodZones,
+      wetlandsIntersects: parcels.wetlandsIntersects,
+      waterSource: parcels.waterSource,
+      sewerType: parcels.sewerType,
+      askingPrice: sql<string | null>`(
+        SELECT d.seller_counter FROM deals d
+        WHERE d.parcel_id = ${parcels.id} AND d.seller_counter IS NOT NULL
+        ORDER BY d.updated_at DESC LIMIT 1)`,
+      geometry: parcels.geometry,
+    })
+    .from(parcels)
+    .where(and(...where))
+    // Enough to see the shape of the inventory without shipping a megabyte of
+    // polygons to the browser.
+    .limit(500);
+}

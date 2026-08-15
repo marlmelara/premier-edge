@@ -2,7 +2,9 @@ import Link from "next/link";
 import { eq } from "drizzle-orm";
 import { getDb } from "@/db";
 import { builders, criteriaSets } from "@/db/schema";
-import { landBankCounties, matchBankToBuyer, searchLandBank, type LandBankRow } from "@/lib/land-bank";
+import { landBankCounties, landBankGeometry, matchBankToBuyer, searchLandBank, type LandBankRow } from "@/lib/land-bank";
+import { LandMap, type MapParcel } from "@/components/land-map";
+import type { GeoJsonPolygon } from "@/lib/gis/arcgis";
 import { formatMoney, formatPhone, formatSqft, timeAgo } from "@/lib/format";
 import { Badge } from "@/components/ui/badge";
 
@@ -83,6 +85,7 @@ export default async function LandBankPage({
     withPrice?: string;
     q?: string;
     buyer?: string;
+    view?: string;
   }>;
 }) {
   const sp = await searchParams;
@@ -110,6 +113,22 @@ export default async function LandBankPage({
         q: sp.q || undefined,
       });
 
+  // Map is opt-in: polygons are heavy, and the table is the right tool when
+  // you already know what you're looking for.
+  const showMap = sp.view === "map";
+  const mapParcels: MapParcel[] = showMap
+    ? (
+        await landBankGeometry({
+          county: sp.county || undefined,
+          minSqft: sp.minSqft ? Number(sp.minSqft) : undefined,
+          floodZones: sp.floodZones
+            ? sp.floodZones.split(",").map((z) => z.trim().toUpperCase()).filter(Boolean)
+            : undefined,
+          wetlands: sp.wetlands === "only" || sp.wetlands === "exclude" ? sp.wetlands : undefined,
+        })
+      ).map((p) => ({ ...p, geometry: p.geometry as GeoJsonPolygon }))
+    : [];
+
   const withPrice = rows.filter((r) => r.sellerAsking).length;
   const inBudget = rows.filter((r) => r.withinBudget === true).length;
 
@@ -122,6 +141,29 @@ export default async function LandBankPage({
             Every parcel we&apos;ve checked, kept whether or not we could buy it. Flood zone and wetlands don&apos;t
             change — a new buyer&apos;s buy box might.
           </p>
+        </div>
+        <div className="flex gap-1">
+          {[
+            { key: "", label: "Table" },
+            { key: "map", label: "Map" },
+          ].map((v) => {
+            const next = new URLSearchParams(
+              Object.entries(sp).filter(([, val]) => val) as [string, string][],
+            );
+            if (v.key) next.set("view", v.key);
+            else next.delete("view");
+            return (
+              <Link
+                key={v.label}
+                href={`/land-bank${next.toString() ? `?${next}` : ""}`}
+                className={`rounded px-2 py-1 text-xs ${
+                  (sp.view ?? "") === v.key ? "bg-secondary font-medium" : "text-muted-foreground hover:bg-secondary/50"
+                }`}
+              >
+                {v.label}
+              </Link>
+            );
+          })}
         </div>
         <div className="text-right text-xs text-muted-foreground">
           <p>
@@ -209,6 +251,18 @@ export default async function LandBankPage({
             Filter
           </button>
         </form>
+      )}
+
+      {showMap && (
+        <div className="space-y-2">
+          <LandMap parcels={mapParcels} />
+          <div className="flex flex-wrap gap-3 text-[11px] text-muted-foreground">
+            <span><span className="mr-1 inline-block size-2 rounded-sm bg-emerald-500" />clean</span>
+            <span><span className="mr-1 inline-block size-2 rounded-sm bg-amber-500" />flood zone</span>
+            <span><span className="mr-1 inline-block size-2 rounded-sm bg-sky-400" />wetlands</span>
+            <span>{mapParcels.length} lot(s) drawn · hover for detail</span>
+          </div>
+        </div>
       )}
 
       <div className="overflow-x-auto rounded-lg border border-border">

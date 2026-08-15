@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { escrowTotal, listClosings } from "@/lib/closings";
+import { escrowTotal, listClosings, listUpcoming, type UpcomingItem } from "@/lib/closings";
 import { calendarWeeks, fitsCalendar, monthsIn, resolveRange, shiftRange, toDayString } from "@/lib/date-range";
 import { formatMoney, formatPhone } from "@/lib/format";
 
@@ -26,7 +26,7 @@ export default async function ClosingsPage({
 }) {
   const params = await searchParams;
   const range = resolveRange(params);
-  const [summary, escrow] = await Promise.all([listClosings(range), escrowTotal()]);
+  const [summary, escrow, upcoming] = await Promise.all([listClosings(range), escrowTotal(), listUpcoming(range)]);
 
   const href = (next: Record<string, string | number | undefined>) => {
     const p = new URLSearchParams();
@@ -121,7 +121,7 @@ export default async function ClosingsPage({
       </div>
 
       {showCalendar ? (
-        <CalendarGrid range={range} byDay={summary.byDay} />
+        <CalendarGrid range={range} byDay={summary.byDay} upcoming={upcoming} />
       ) : (
         <MonthRollup range={range} byMonth={summary.byMonth} />
       )}
@@ -168,10 +168,18 @@ export default async function ClosingsPage({
 function CalendarGrid({
   range,
   byDay,
+  upcoming,
 }: {
   range: ReturnType<typeof resolveRange>;
   byDay: Map<string, { cents: number; count: number }>;
+  upcoming: UpcomingItem[];
 }) {
+  const dueByDay = new Map<string, UpcomingItem[]>();
+  for (const item of upcoming) {
+    const list = dueByDay.get(item.day) ?? [];
+    list.push(item);
+    dueByDay.set(item.day, list);
+  }
   const weeks = calendarWeeks(range.from);
   const monthIndex = range.from.getMonth();
   const today = toDayString(new Date());
@@ -212,6 +220,18 @@ function CalendarGrid({
               {entry && !outside && (
                 <p className="mt-0.5 text-[11px] font-semibold text-emerald-300">{money(entry.cents)}</p>
               )}
+              {!outside &&
+                dueByDay.get(key)?.map((item) => (
+                  <p
+                    key={item.dealId}
+                    title={item.label}
+                    className={`mt-0.5 truncate text-[9px] ${
+                      item.kind === "contract" ? "text-amber-300" : "text-sky-300"
+                    }`}
+                  >
+                    {item.kind === "contract" ? "✍️" : "⏰"} {item.label}
+                  </p>
+                ))}
             </div>
           );
         })}
