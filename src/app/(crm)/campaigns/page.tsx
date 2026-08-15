@@ -81,7 +81,7 @@ export default async function CampaignsPage() {
       : "—";
 
   return (
-    <main className="space-y-8 px-6 py-6">
+    <main className="h-full space-y-8 overflow-y-auto px-6 py-6">
       {/* Above the metrics on purpose: Sendivo's own numbers can look healthy
           while nothing reaches us, which is the failure this catches. */}
       <WebhookHealth db={db} />

@@ -140,7 +140,7 @@ describe("classifyWebhook — the documented Sendivo envelope", () => {
   });
 
   it("reads a real inbound reply out of data", () => {
-    const { test: _test, ...live } = REAL_INBOUND;
+    const live = { ...REAL_INBOUND, test: undefined };
     const result = classifyWebhook(live);
     expect(result.kind).toBe("inbound");
     if (result.kind === "inbound") {

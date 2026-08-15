@@ -35,7 +35,7 @@ export default async function DealRoomPage({
   const pendingDraft = selectedId ? await getPendingDraft(getDb(), selectedId) : null;
 
   return (
-    <main className="grid h-[calc(100vh-49px)] grid-cols-[300px_1fr_340px]">
+    <main className="grid h-full grid-cols-[300px_1fr_340px]">
       <PollRefresh />
 
       {/* Left — conversation list */}

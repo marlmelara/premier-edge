@@ -5,6 +5,7 @@ import {
   builders,
   campaigns,
   checks,
+  contactParcels,
   contacts,
   contracts,
   conversations,
@@ -243,4 +244,88 @@ export async function listPipeline(filters: PipelineFilters) {
     .where(where.length ? and(...where) : undefined)
     .orderBy(desc(deals.updatedAt))
     .limit(200);
+}
+
+export type SellerFilters = {
+  q?: string;
+  /** Only contacts who have actually replied to us. */
+  replied?: boolean;
+  optedOut?: boolean;
+  /** Only contacts with a lot on record. */
+  withParcel?: boolean;
+  page?: number;
+};
+
+export const SELLERS_PAGE_SIZE = 50;
+
+/**
+ * The seller directory (§2.2). Paginated because the blast audience is tens of
+ * thousands of rows — the whole point of syncing Sendivo's logs is that every
+ * number we have ever texted is in here, and an unbounded query would try to
+ * render all of them.
+ */
+export async function listSellers(filters: SellerFilters = {}) {
+  const db = getDb();
+  const page = Math.max(1, filters.page ?? 1);
+  const where: SQL[] = [];
+
+  if (filters.q?.trim()) {
+    const q = `%${filters.q.trim()}%`;
+    // Digits-only variant so "(239) 555-0101" finds a stored +12395550101.
+    const digits = filters.q.replace(/\D/g, "");
+    const match = or(
+      ilike(contacts.name, q),
+      ilike(contacts.phone, q),
+      digits.length >= 4 ? ilike(contacts.phone, `%${digits}%`) : undefined,
+      ilike(contacts.mailingStreet, q),
+    );
+    if (match) where.push(match);
+  }
+  if (filters.optedOut !== undefined) where.push(eq(contacts.optedOut, filters.optedOut));
+  if (filters.replied) {
+    where.push(sql`EXISTS (
+      SELECT 1 FROM ${messages} m
+      JOIN ${conversations} cv ON m.conversation_id = cv.id
+      JOIN ${deals} d ON cv.deal_id = d.id
+      WHERE d.contact_id = ${contacts.id} AND m.direction = 'inbound')`);
+  }
+  if (filters.withParcel) {
+    where.push(sql`EXISTS (SELECT 1 FROM ${contactParcels} cp WHERE cp.contact_id = ${contacts.id})`);
+  }
+
+  const condition = where.length ? and(...where) : undefined;
+
+  const [rows, [count]] = await Promise.all([
+    db
+      .select({
+        id: contacts.id,
+        name: contacts.name,
+        phone: contacts.phone,
+        source: contacts.source,
+        optedOut: contacts.optedOut,
+        updatedAt: contacts.updatedAt,
+        parcelCount: sql<number>`(SELECT count(*)::int FROM ${contactParcels} cp WHERE cp.contact_id = ${contacts.id})`,
+        firstAddress: sql<string | null>`(
+          SELECT p.address FROM ${contactParcels} cp
+          JOIN ${parcels} p ON p.id = cp.parcel_id
+          WHERE cp.contact_id = ${contacts.id} LIMIT 1)`,
+        inboundCount: sql<number>`(
+          SELECT count(*)::int FROM ${messages} m
+          JOIN ${conversations} cv ON m.conversation_id = cv.id
+          JOIN ${deals} d ON cv.deal_id = d.id
+          WHERE d.contact_id = ${contacts.id} AND m.direction = 'inbound')`,
+        conversationId: sql<string | null>`(
+          SELECT cv.id FROM ${conversations} cv
+          JOIN ${deals} d ON cv.deal_id = d.id
+          WHERE d.contact_id = ${contacts.id} ORDER BY cv.created_at DESC LIMIT 1)`,
+      })
+      .from(contacts)
+      .where(condition)
+      .orderBy(desc(contacts.updatedAt))
+      .limit(SELLERS_PAGE_SIZE)
+      .offset((page - 1) * SELLERS_PAGE_SIZE),
+    db.select({ n: sql<number>`count(*)::int` }).from(contacts).where(condition),
+  ]);
+
+  return { rows, total: count?.n ?? 0, page, pageSize: SELLERS_PAGE_SIZE };
 }
