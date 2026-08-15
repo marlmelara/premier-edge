@@ -5,6 +5,7 @@ import { getBlasts, getDeliveryMetrics } from "@/lib/sendivo/client";
 import { isKillSwitchOn } from "@/lib/agent/guardrails";
 import { hasAnthropicKey } from "@/lib/agent/anthropic";
 import { KillSwitch } from "@/components/kill-switch";
+import { CampaignManager } from "@/components/campaign-list";
 import { WebhookHealth } from "@/components/webhook-health";
 import { listCampaignsWithGate } from "@/lib/queries";
 import { getRedis } from "@/lib/redis";
@@ -131,6 +132,19 @@ export default async function CampaignsPage() {
           <Tile label="Sends blocked" value={agentStats.blocked.toString()} hint="guardrails" />
           <Tile label="Threads" value={local.conversations.toString()} hint={`${local.inbound} in / ${local.outbound} out`} />
         </div>
+      </section>
+
+      <section>
+        <h2 className="mb-2 text-sm font-semibold text-muted-foreground">Campaigns</h2>
+        <CampaignManager
+          campaigns={campaignGates.map((c) => ({
+            id: c.id,
+            name: c.name,
+            market: c.market ?? null,
+            status: c.status,
+            sendivoCampaignId: null,
+          }))}
+        />
       </section>
 
       <section>
