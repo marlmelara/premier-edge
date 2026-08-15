@@ -1,5 +1,5 @@
 import { NextResponse, type NextRequest } from "next/server";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { getDb } from "@/db";
 import { agentActions, messages } from "@/db/schema";
 import { env } from "@/env";
@@ -35,6 +35,11 @@ export async function POST(req: NextRequest) {
   }
   const token = req.headers.get("x-webhook-token") ?? req.nextUrl.searchParams.get("token");
   if (token !== expected) {
+    // A silent 401 is indistinguishable from never being called at all, which
+    // is the difference between "the URL in Sendivo is missing its token" and
+    // "Sendivo isn't sending webhooks" — hours of guessing either way. Leave a
+    // trace, without storing the body (it's unauthenticated and attacker-shaped).
+    await logRejection(req, token);
     return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   }
 
@@ -101,5 +106,41 @@ export async function POST(req: NextRequest) {
       console.warn("[sendivo-webhook] unrecognized payload captured to agent_actions");
       return NextResponse.json({ ok: false, reason: "unrecognized payload (captured)" }, { status: 200 });
     }
+  }
+}
+
+/**
+ * Record that something hit the webhook with the wrong token. Capped per hour:
+ * the URL is public, so an open logger would let anyone fill the audit table.
+ * Only shape metadata is stored, never the body.
+ */
+const REJECTION_LOG_CAP_PER_HOUR = 20;
+
+async function logRejection(req: NextRequest, token: string | null): Promise<void> {
+  try {
+    const db = getDb();
+    const [recent] = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(agentActions)
+      .where(
+        sql`${agentActions.type} = 'sendivo_webhook_rejected'
+            AND ${agentActions.createdAt} > now() - interval '1 hour'`,
+      );
+    if ((recent?.count ?? 0) >= REJECTION_LOG_CAP_PER_HOUR) return;
+
+    await db.insert(agentActions).values({
+      type: "sendivo_webhook_rejected",
+      input: {
+        // Enough to tell "no token at all" from "wrong token" from "stale token"
+        // without ever writing the presented value down.
+        tokenPresented: token === null ? "none" : `${token.length} chars`,
+        via: req.headers.get("x-webhook-token") ? "header" : token ? "query" : "absent",
+        userAgent: req.headers.get("user-agent")?.slice(0, 120) ?? null,
+        ip: req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? null,
+      },
+    });
+  } catch (error) {
+    // Diagnostics must never turn a 401 into a 500.
+    console.warn("[sendivo-webhook] could not log rejection", error);
   }
 }
