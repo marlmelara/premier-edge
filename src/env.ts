@@ -30,6 +30,12 @@ const envSchema = z.object({
     .pipe(z.array(authUserSchema).min(1)),
   SENDIVO_API_KEY: z.string().optional(),
   SENDIVO_WEBHOOK_TOKEN: z.string().optional(),
+  /**
+   * Sendivo's webhook signing secret (`whsec_…`, added to their UI ~Aug 15 2026).
+   * Optional: the URL token is the primary gate. When set, deliveries are
+   * checked against it — see the webhook route.
+   */
+  SENDIVO_WEBHOOK_SIGNING_SECRET: z.string().optional(),
   /** Optional pin for which number notifications send from; otherwise the account default. */
   SENDIVO_FROM_NUMBER_ID: z.string().optional(),
   UPSTASH_REDIS_REST_URL: z.string().optional(),

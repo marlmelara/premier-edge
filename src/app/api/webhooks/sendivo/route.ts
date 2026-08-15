@@ -1,6 +1,7 @@
+import { createHmac } from "node:crypto";
 import { NextResponse, type NextRequest } from "next/server";
 import { eq, sql } from "drizzle-orm";
-import { getDb } from "@/db";
+import { getDb, type Db } from "@/db";
 import { agentActions, messages } from "@/db/schema";
 import { env } from "@/env";
 import { runAgentTurn } from "@/lib/agent/run";
@@ -18,10 +19,13 @@ import { classifyWebhook } from "@/lib/sendivo/webhook-schema";
 export const maxDuration = 60;
 
 /**
- * Sendivo webhook receiver. Sendivo's webhook config is just a URL (no signing
- * mechanism in their docs), so the shared secret rides in the URL:
+ * Sendivo webhook receiver. The shared secret rides in the URL:
  * https://<host>/api/webhooks/sendivo?token=<SENDIVO_WEBHOOK_TOKEN>
  * (an x-webhook-token header also works, for manual testing).
+ *
+ * Sendivo added a per-webhook signing secret (`whsec_…`) around Aug 15 2026,
+ * after this was written. It is not yet enforced here — see logReceipt for why,
+ * and for how the scheme gets identified from a real delivery.
  *
  * Always 200 on payloads we can't act on — 4xx makes transports retry forever.
  * 401 only on a bad token. Unrecognized shapes are captured into agent_actions
@@ -43,14 +47,28 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   }
 
+  // Read the body as text first: signature verification has to run over the
+  // exact bytes Sendivo signed, not a re-serialized object.
+  const raw = await req.text();
   let body: unknown;
   try {
-    body = await req.json();
+    body = JSON.parse(raw);
   } catch {
     return NextResponse.json({ ok: false, reason: "invalid json" }, { status: 200 });
   }
 
   const db = getDb();
+
+  // Record every authenticated delivery, headers included.
+  //
+  // Sendivo added a `whsec_…` signing secret to their webhook UI around Aug 15
+  // 2026, and the "Webhook Events" reference that would document the scheme is
+  // a collapsed panel that doesn't survive their PDF export. Rather than guess
+  // at a header name and an algorithm — and risk rejecting real seller replies —
+  // the first deliveries are recorded in full so the scheme can be read off a
+  // real request and then enforced.
+  await logReceipt(db, req, raw, body);
+
   const classified = classifyWebhook(body);
 
   switch (classified.kind) {
@@ -106,6 +124,58 @@ export async function POST(req: NextRequest) {
       console.warn("[sendivo-webhook] unrecognized payload captured to agent_actions");
       return NextResponse.json({ ok: false, reason: "unrecognized payload (captured)" }, { status: 200 });
     }
+  }
+}
+
+/** Headers worth keeping. Anything carrying a signature or an event name. */
+const INTERESTING_HEADER = /^(x-|sendivo|svix|webhook|user-agent$|content-type$)/i;
+
+/**
+ * Log an authenticated delivery with its headers, plus what an HMAC-SHA256 of
+ * the raw body under the signing secret would look like in the common encodings.
+ *
+ * Comparing those candidates against whatever signature header Sendivo actually
+ * sent identifies the scheme from one real request, with no guessing — after
+ * which verification can be enforced instead of observed.
+ */
+async function logReceipt(db: Db, req: NextRequest, raw: string, body: unknown): Promise<void> {
+  try {
+    const [seen] = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(agentActions)
+      .where(sql`${agentActions.type} = 'sendivo_webhook_received'`);
+    // Only the first handful matter — after that the shape is known and every
+    // real message is already stored as a message row.
+    if ((seen?.count ?? 0) >= 25) return;
+
+    const headers: Record<string, string> = {};
+    req.headers.forEach((value, name) => {
+      if (INTERESTING_HEADER.test(name)) headers[name] = value.slice(0, 200);
+    });
+
+    const secret = env().SENDIVO_WEBHOOK_SIGNING_SECRET;
+    const candidates = secret
+      ? {
+          hex: createHmac("sha256", secret).update(raw).digest("hex"),
+          base64: createHmac("sha256", secret).update(raw).digest("base64"),
+          // Svix-style secrets are base64 after the `whsec_` prefix.
+          hex_decoded_secret: createHmac("sha256", Buffer.from(secret.replace(/^whsec_/, ""), "base64"))
+            .update(raw)
+            .digest("hex"),
+          base64_decoded_secret: createHmac("sha256", Buffer.from(secret.replace(/^whsec_/, ""), "base64"))
+            .update(raw)
+            .digest("base64"),
+        }
+      : null;
+
+    await db.insert(agentActions).values({
+      type: "sendivo_webhook_received",
+      input: { headers, bodyKeys: body && typeof body === "object" ? Object.keys(body) : null },
+      output: { body, signatureCandidates: candidates },
+    });
+  } catch (error) {
+    // Diagnostics must never cost us a seller's reply.
+    console.warn("[sendivo-webhook] could not log receipt", error);
   }
 }
 
