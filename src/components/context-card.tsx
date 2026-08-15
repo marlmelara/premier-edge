@@ -5,6 +5,7 @@ import { Badge } from "@/components/ui/badge";
 import { ParcelMap } from "@/components/parcel-map";
 import { ParcelManager, type OwnedParcel } from "@/components/parcel-manager";
 import { LabelPicker } from "@/components/label-picker";
+import { ClerkLink } from "@/components/clerk-link";
 import { anchorOffer, fromCents, maxOffer, roomLeft, toCents, type OfferCriteria } from "@/lib/eligibility/offer-math";
 import { femaMscUrl } from "@/lib/eligibility/fema";
 import { nwiMapperUrl } from "@/lib/eligibility/nwi";
@@ -177,6 +178,8 @@ export function ContextCard({
         </div>
         {parcel.utilityDetail && <p className="mt-0.5 text-[10px] text-muted-foreground">{parcel.utilityDetail}</p>}
       </div>
+
+      <ClerkLink county={parcel.county} ownerName={parcel.ownerNameRaw} parcelId={parcel.parcelId} />
 
       {contact && <LabelPicker contactId={contact.id} current={contact.labels ?? []} />}
 
