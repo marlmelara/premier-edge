@@ -247,3 +247,21 @@ Unchanged: milestone order is law · explain-backs at every milestone (written, 
 | Polling over websockets | 2 users; simplicity wins | "Stale by ≤10s" — acceptable, stated |
 | Leaflet + OSM | Free, keyless, geometry already in hand | Less pretty than Mapbox — swappable behind one component |
 | Drizzle / Postgres / copilot-first / takeover-as-ownership / LLM-language-only | As previously argued | As previously argued |
+
+## 11e. Sendivo export import — DOC AMENDMENT (Aug 15 2026)
+
+Sendivo's API cannot be read. Verified live: `/contacts` requires a phone number, `/conversations/{id}/messages` is POST-only (405), and there is no list endpoint for conversations, messages, contacts, or opt-outs (404). The webhook is the only programmatic path in, and it only carries traffic sent *after* it works.
+
+That leaves everything already in Sendivo — weeks of live negotiations, and **every STOP anyone has ever sent** — invisible to Premier Edge. The opt-outs are the serious half: suppression reads this database, so a seller who opted out in Sendivo gets texted again the moment a blast runs from here.
+
+`scripts/import-sendivo.ts` reads Sendivo's CSV exports:
+- `optouts` → `opt_outs` ledger + `contacts.opted_out`, creating contact rows for numbers we've never seen so the suppression survives a later list import. **Run before any Premier Edge blast.**
+- `history` → contacts, deals, conversations, messages. Threads land as history; the agent is deliberately *not* run, since these were already answered and drafting replies to month-old messages would fill the queue with stale offers.
+
+Both idempotent. Rows missing a phone, body, or readable direction are reported, never guessed — an outbound logged as inbound would be classified as if the seller said it.
+
+## 11f. Webhook health — DOC AMENDMENT (Aug 15 2026)
+
+Webhook failure is silent by construction: the Deal Room just stays empty while Sendivo's inbox fills. It went unnoticed through the first three weeks of live campaigns.
+
+Two changes make it loud. A rejected call now writes `sendivo_webhook_rejected` to `agent_actions` (shape only — token length, header vs query, UA, IP; never the body, which is unauthenticated; capped at 20/hour since the URL is public). And the campaigns page carries a status strip that distinguishes the two failure modes that look identical from the outside: **rejecting** (something is calling with the wrong token — the URL is missing its `?token=`) versus **quiet** (nothing is calling at all — Sendivo isn't configured to send).

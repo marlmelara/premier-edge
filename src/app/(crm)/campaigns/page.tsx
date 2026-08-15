@@ -5,6 +5,7 @@ import { getBlasts, getDeliveryMetrics } from "@/lib/sendivo/client";
 import { isKillSwitchOn } from "@/lib/agent/guardrails";
 import { hasAnthropicKey } from "@/lib/agent/anthropic";
 import { KillSwitch } from "@/components/kill-switch";
+import { WebhookHealth } from "@/components/webhook-health";
 import { listCampaignsWithGate } from "@/lib/queries";
 import { getRedis } from "@/lib/redis";
 import { formatDateTime } from "@/lib/format";
@@ -81,6 +82,10 @@ export default async function CampaignsPage() {
 
   return (
     <main className="space-y-8 px-6 py-6">
+      {/* Above the metrics on purpose: Sendivo's own numbers can look healthy
+          while nothing reaches us, which is the failure this catches. */}
+      <WebhookHealth db={db} />
+
       <section>
         <div className="flex items-baseline justify-between">
           <h1 className="text-lg font-semibold">Campaigns</h1>
