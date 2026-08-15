@@ -3,7 +3,7 @@ import type { checks as checksTable, contacts, contracts as contractsTable, crit
 import { crossCheckOwner } from "@/lib/contracts/owner-xcheck";
 import { Badge } from "@/components/ui/badge";
 import { ParcelMap } from "@/components/parcel-map";
-import { AttachParcelForm } from "@/components/attach-parcel";
+import { ParcelManager, type OwnedParcel } from "@/components/parcel-manager";
 import { anchorOffer, fromCents, maxOffer, roomLeft, toCents, type OfferCriteria } from "@/lib/eligibility/offer-math";
 import { femaMscUrl } from "@/lib/eligibility/fema";
 import { nwiMapperUrl } from "@/lib/eligibility/nwi";
@@ -36,6 +36,7 @@ export function ContextCard({
   contact,
   criteria,
   contracts = [],
+  ownedParcels = [],
 }: {
   deal: Deal;
   parcel: Parcel | null;
@@ -43,6 +44,8 @@ export function ContextCard({
   contact: Contact | null;
   criteria: Criteria | null;
   contracts?: Contract[];
+  /** Every lot this seller is on record for, not just the one under negotiation. */
+  ownedParcels?: OwnedParcel[];
 }) {
   if (!parcel) {
     return (
@@ -51,7 +54,14 @@ export function ContextCard({
         <p className="text-sm text-muted-foreground">
           No parcel linked yet. Look it up by county parcel ID to run eligibility.
         </p>
-        <AttachParcelForm dealId={deal.id} />
+        {contact && (
+          <ParcelManager
+            dealId={deal.id}
+            contactId={contact.id}
+            activeParcelRowId={null}
+            owned={ownedParcels}
+          />
+        )}
         {contact?.sendivoRaw != null &&
           typeof contact.sendivoRaw === "object" &&
           "property_address" in contact.sendivoRaw &&
@@ -255,6 +265,17 @@ export function ContextCard({
       </div>
 
       {/* Quick links */}
+      {contact && (
+        <div className="border-t border-border pt-3">
+          <ParcelManager
+            dealId={deal.id}
+            contactId={contact.id}
+            activeParcelRowId={parcel.id}
+            owned={ownedParcels}
+          />
+        </div>
+      )}
+
       <div className="flex flex-wrap gap-3 text-xs">
         {parcel.appraiserUrl && (
           <Link href={parcel.appraiserUrl} target="_blank" className="underline underline-offset-2">

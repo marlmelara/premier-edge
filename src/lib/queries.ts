@@ -114,6 +114,25 @@ export async function getConversationDetail(conversationId: string) {
     if (!latestChecks.has(c.kind)) latestChecks.set(c.kind, c);
   }
 
+  // Every lot this seller is on record for — not just the one under
+  // negotiation. A seller who owns three parcels is normal, and the Deal Room
+  // has to be able to say "we're actually talking about the other one".
+  const ownedParcels = await db
+    .select({
+      parcelRowId: parcels.id,
+      county: parcels.county,
+      parcelId: parcels.parcelId,
+      address: parcels.address,
+      sqft: parcels.sqft,
+      floodZones: parcels.floodZones,
+      wetlandsIntersects: parcels.wetlandsIntersects,
+      relationship: contactParcels.relationship,
+    })
+    .from(contactParcels)
+    .innerJoin(parcels, eq(contactParcels.parcelId, parcels.id))
+    .where(eq(contactParcels.contactId, deal.contactId))
+    .orderBy(desc(contactParcels.createdAt));
+
   return {
     conversation,
     deal,
@@ -121,6 +140,7 @@ export async function getConversationDetail(conversationId: string) {
     campaign: campaign ?? null,
     criteria: criteria ?? null,
     parcel: parcel ?? null,
+    ownedParcels,
     checks: [...latestChecks.values()],
     contracts: dealContracts,
     thread,

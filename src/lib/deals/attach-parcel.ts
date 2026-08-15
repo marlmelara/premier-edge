@@ -2,7 +2,7 @@ import { eq } from "drizzle-orm";
 import { isCountyKey } from "@/adapters/registry";
 import type { CountyKey } from "@/adapters/types";
 import type { Db } from "@/db";
-import { agentActions, deals } from "@/db/schema";
+import { agentActions, contactParcels, deals } from "@/db/schema";
 import { bestMatch } from "@/lib/eligibility/match-builders";
 import { fromCents } from "@/lib/eligibility/offer-math";
 import { verifyParcel } from "@/lib/eligibility/verify-parcel";
@@ -42,6 +42,14 @@ export async function attachParcelToDeal(
         anchor: fromCents(best.anchorCents),
       }
     : { matchedBuilderId: null };
+
+  // Attaching a lot to a deal asserts this seller owns it, so record the
+  // ownership too. Without this the contact's lot list stays empty even while
+  // a parcel is plainly attached, and a re-attach later has nothing to offer.
+  await db
+    .insert(contactParcels)
+    .values({ contactId: deal.contactId, parcelId: result.parcelRowId, relationship: "claimed" })
+    .onConflictDoNothing();
 
   await db
     .update(deals)
