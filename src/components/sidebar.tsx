@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
   Building2,
+  CalendarDays,
   Landmark,
   LayoutList,
   MessagesSquare,
@@ -20,6 +21,7 @@ import {
 const NAV = [
   { href: "/deal-room", label: "Deal Room", icon: MessagesSquare, hint: "conversations + drafts" },
   { href: "/pipeline", label: "Pipeline", icon: LayoutList, hint: "every deal by stage" },
+  { href: "/closings", label: "Closings", icon: CalendarDays, hint: "what actually got paid, and when" },
   { href: "/sellers", label: "Sellers", icon: Users, hint: "contacts and their lots" },
   { href: "/land-bank", label: "Land Bank", icon: Landmark, hint: "checked lots, searchable" },
   { href: "/buyers", label: "Buyers", icon: Building2, hint: "buy boxes" },

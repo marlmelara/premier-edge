@@ -43,6 +43,13 @@
       "when": 1786830876835,
       "tag": "0005_solid_synch",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1786831867854,
+      "tag": "0006_foamy_marvel_boy",
+      "breakpoints": true
     }
   ]
 }

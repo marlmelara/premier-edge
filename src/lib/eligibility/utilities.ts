@@ -33,6 +33,22 @@ type ServiceLayer = {
  * UEP (Utilities Extension Project) footprint — for a Cape Coral vacant lot,
  * whether it sits in an assessed area is the question that decides the deal.
  */
+/**
+ * Counties probed Aug 15 2026:
+ *
+ * - **Lee** — full coverage, below.
+ * - **Charlotte** — publishes only an *Urban Service Area* delineation
+ *   (CCGIS_Web_Layers2022 layer 34, USA = In/Out/PG). That is a planning
+ *   boundary, not a water/sewer service area. Being inside it correlates with
+ *   utilities but does not establish them, and this module's whole contract is
+ *   that a reported value is a fact. Deliberately not wired up.
+ * - **St. Lucie** — public GIS exposes tax maps only; no service-area layer is
+ *   discoverable. Would need a direct request to SLC Utilities.
+ *
+ * Both fall through to "not determined", which is the safe direction: a buy box
+ * that prices on utilities declines to quote rather than guess, and Marlon can
+ * set them by hand on the parcel when he knows.
+ */
 const LAYERS: Record<string, ServiceLayer[]> = {
   lee: [
     { url: `${LEE_ONLINE}/CAPECORAL_WaterAssessmentAreas/FeatureServer/0`, means: "city_water", label: "Cape Coral water assessment (UEP)" },

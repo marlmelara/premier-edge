@@ -273,6 +273,15 @@ export const deals = pgTable("deals", {
   // countdown)", which needs a real date — deriving it from updated_at gives a
   // countdown that resets on every edit. Set when title routing confirms a date.
   closingDate: timestamp("closing_date", { withTimezone: true }),
+  /**
+   * DOC AMENDMENT (Aug 15 2026): what we actually earned on this deal — the
+   * spread between the builder's price and what we paid the seller. Recorded
+   * explicitly rather than derived, because the buy box can change after a
+   * close and history must not move with it.
+   */
+  assignmentFee: money("assignment_fee"),
+  /** Set when the money is actually in hand, as distinct from a scheduled closing date. */
+  closedAt: timestamp("closed_at", { withTimezone: true }),
   ...timestamps,
 });
 
