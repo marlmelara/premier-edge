@@ -1,12 +1,13 @@
 import { eq } from "drizzle-orm";
-import { isCountyKey } from "@/adapters/registry";
+import { getAdapter, isCountyKey, listCounties } from "@/adapters/registry";
 import type { CountyKey } from "@/adapters/types";
 import type { Db } from "@/db";
-import { agentActions, contactParcels, deals } from "@/db/schema";
+import { agentActions, contactParcels, contacts, deals } from "@/db/schema";
 import { bestMatch } from "@/lib/eligibility/match-builders";
 import { fromCents } from "@/lib/eligibility/offer-math";
 import { verifyParcel } from "@/lib/eligibility/verify-parcel";
 import { parcelsForContact } from "@/lib/lists/import";
+import { pickConfidentMatch, searchTermFor } from "@/lib/lists/address";
 
 /**
  * Attaching a county-verified parcel to a deal — the step that turns "someone
@@ -94,7 +95,18 @@ export async function autoAttachFromList(
   if (!deal) return { attached: false, reason: "deal not found" };
   if (deal.parcelId) return { attached: false, reason: "deal already has a parcel" };
 
-  const owned = await parcelsForContact(db, contactId);
+  let owned = await parcelsForContact(db, contactId);
+
+  // Nothing on file yet? Sendivo's own contact record carries the property
+  // address (pulled by the first-inbound enrichment and kept in sendivo_raw),
+  // so resolve it against the county appraiser before giving up. This is the
+  // difference between a thread that arrives knowing what land it is about and
+  // one that sits waiting for someone to type a parcel id.
+  if (owned.length === 0) {
+    const resolved = await resolveFromSendivoAddress(db, contactId, conversationId);
+    if (resolved) owned = await parcelsForContact(db, contactId);
+  }
+
   if (owned.length === 0) return { attached: false, reason: "contact has no linked parcel" };
   if (owned.length > 1) {
     await db.insert(agentActions).values({
@@ -123,4 +135,79 @@ export async function autoAttachFromList(
   return result.ok
     ? { attached: true, reason: `verdict ${result.verdict}` }
     : { attached: false, reason: result.reason };
+}
+
+/**
+ * Resolve a contact's lot from the property address Sendivo already holds.
+ *
+ * Every Sendivo contact carries `property_address` / `property_city` from the
+ * list that was uploaded there, and the first-inbound enrichment stores the
+ * whole payload in `contacts.sendivo_raw`. Until now that address was only
+ * *displayed* as a hint on the context card — the schema comment has said
+ * "seeds M1 parcel resolution" since day one, and nothing did it.
+ *
+ * The county appraiser is the authority for turning an address into a parcel
+ * id, and it is already wired up per county. That makes a third-party lookup
+ * unnecessary: the GIS layers are the same records a consumer site is derived
+ * from, they are free, and they carry the geometry that flood and wetlands
+ * checks need anyway.
+ *
+ * Matching is exact-only (lib/lists/address.ts) and must be unambiguous across
+ * every county we support. A near miss is the neighbour's lot, and a lot that
+ * matches in two counties is a coin flip — both are left for a human.
+ */
+async function resolveFromSendivoAddress(
+  db: Db,
+  contactId: string,
+  conversationId?: string,
+): Promise<boolean> {
+  const contact = await db.query.contacts.findFirst({ where: eq(contacts.id, contactId) });
+  const raw = contact?.sendivoRaw;
+  if (!raw || typeof raw !== "object") return false;
+
+  const enrichment = raw as Record<string, unknown>;
+  const address = typeof enrichment.property_address === "string" ? enrichment.property_address : null;
+  if (!address) return false;
+
+  const term = searchTermFor({ propertyAddress: address });
+  if (!term) return false;
+
+  const hits: { county: CountyKey; parcelId: string; address?: string }[] = [];
+  for (const county of listCounties()) {
+    try {
+      const candidates = await getAdapter(county).searchByAddress(term);
+      const match = pickConfidentMatch(address, candidates);
+      if (match.matched) hits.push({ county, parcelId: match.parcel.parcelId, address: match.parcel.address });
+    } catch {
+      // One county's GIS being down must not stop the others from answering.
+    }
+  }
+
+  if (hits.length !== 1) {
+    await db.insert(agentActions).values({
+      conversationId,
+      type: "parcel_address_resolve_skipped",
+      input: { contactId, address },
+      output: { reason: hits.length === 0 ? "no confident match" : `matched in ${hits.length} counties`, hits },
+    });
+    return false;
+  }
+
+  const [hit] = hits;
+  const verified = await verifyParcel(db, hit.county, hit.parcelId, null);
+  if (!verified) return false;
+
+  await db
+    .insert(contactParcels)
+    .values({ contactId, parcelId: verified.parcelRowId, relationship: "claimed" })
+    .onConflictDoNothing();
+
+  await db.insert(agentActions).values({
+    conversationId,
+    type: "parcel_resolved_from_address",
+    input: { contactId, address, source: "sendivo_enrichment" },
+    output: { county: hit.county, parcelId: hit.parcelId, matchedAddress: hit.address },
+  });
+
+  return true;
 }
