@@ -162,6 +162,22 @@ export function ContextCard({
                 : "PENDING ⚠️"}
       </div>
 
+      {/* Utilities: the largest single price swing on a vacant lot, since the
+          next owner either connects or drills. */}
+      <div className="rounded border border-border p-2 text-xs">
+        <div className="flex items-center justify-between">
+          <span className="text-muted-foreground">Utilities</span>
+          <span className="font-medium">
+            {parcel.waterSource || parcel.sewerType
+              ? `${parcel.waterSource === "city" ? "City water" : parcel.waterSource === "well" ? "Well" : "water ?"} · ${
+                  parcel.sewerType === "city" ? "city sewer" : parcel.sewerType === "septic" ? "septic" : "sewer ?"
+                }`
+              : "not determined"}
+          </span>
+        </div>
+        {parcel.utilityDetail && <p className="mt-0.5 text-[10px] text-muted-foreground">{parcel.utilityDetail}</p>}
+      </div>
+
       {contact && <LabelPicker contactId={contact.id} current={contact.labels ?? []} />}
 
       {/* Which buyer wants it — the point of the whole check */}

@@ -6,8 +6,10 @@ import { builders, campaignBuilders, checks, criteriaSets, parcels } from "@/db/
 import { getRedis } from "@/lib/redis";
 import { queryFloodZones, type FloodZoneHit } from "./fema";
 import { queryWetlands, type WetlandHit } from "./nwi";
+import { lookupUtilities, type UtilityLookup } from "./utilities";
 import { matchBuilders, verdictFromMatches, type BuilderCriteria, type BuilderMatch, type ParcelFacts } from "./match-builders";
 import { toCents } from "./offer-math";
+import { boxesForPlace, type BuyBox, type UtilityRule } from "./buy-box";
 import type { CheckOutcome } from "./rules";
 
 export type VerifyResult = {
@@ -36,7 +38,16 @@ export async function verifyParcel(
   parcelId: string,
   campaignId: string | null,
 ): Promise<VerifyResult | null> {
-  const criteria = campaignId ? await loadCampaignBuilders(db, campaignId) : [];
+  // The parcel comes first now: which buy boxes apply depends on the lot's
+  // city and zip, so there is nothing to load criteria for until we know where
+  // it is. That also means the cache key is built from the boxes that actually
+  // applied, not from every box on the campaign.
+  const adapter = getAdapter(county);
+  const parcel = await adapter.getParcelById(parcelId);
+  if (!parcel) return null;
+
+  const place = { county, city: cityFromAddress(parcel.address), zip: zipFromAddress(parcel.address) };
+  const criteria = campaignId ? await loadCampaignBuilders(db, campaignId, place) : [];
 
   const redis = getRedis();
   const key = cacheKey(county, parcelId, criteria);
@@ -44,10 +55,6 @@ export async function verifyParcel(
     const hit = await redis.get<Omit<VerifyResult, "fromCache">>(key).catch(() => null);
     if (hit) return { ...hit, fromCache: true };
   }
-
-  const adapter = getAdapter(county);
-  const parcel = await adapter.getParcelById(parcelId);
-  if (!parcel) return null;
 
   const [row] = await db
     .insert(parcels)
@@ -57,9 +64,21 @@ export async function verifyParcel(
 
   // Parcel-level facts: gathered once, regardless of how many buyers we score.
   const geometry = parcel.geometry;
-  const [flood, wet] = geometry
-    ? await Promise.all([safely(() => queryFloodZones(geometry)), safely(() => queryWetlands(geometry))])
-    : [{ ok: false as const, error: "no parcel geometry" }, { ok: false as const, error: "no parcel geometry" }];
+  const [flood, wet, utils] = geometry
+    ? await Promise.all([
+        safely(() => queryFloodZones(geometry)),
+        safely(() => queryWetlands(geometry)),
+        safely(() => lookupUtilities(county, geometry)),
+      ])
+    : [
+        { ok: false as const, error: "no parcel geometry" },
+        { ok: false as const, error: "no parcel geometry" },
+        { ok: false as const, error: "no parcel geometry" },
+      ];
+
+  const utilities: UtilityLookup = utils.ok
+    ? utils.value
+    : { incomplete: true, sources: [], detail: "utility lookup failed" };
 
   const facts: ParcelFacts = {
     sqft: parcel.sqft,
@@ -75,6 +94,11 @@ export async function verifyParcel(
     .set({
       floodZones: [...new Set(facts.floodZones.map((z) => z.zone))],
       wetlandsIntersects: flood.ok && wet.ok ? facts.wetlands.length > 0 : null,
+      // Null when undetermined — never defaulted to well/septic, since a buy box
+      // that prices on utilities must refuse rather than guess.
+      waterSource: utilities.water ?? null,
+      sewerType: utilities.sewer ?? null,
+      utilityDetail: utilities.detail ?? null,
       lastCheckedAt: new Date(),
       updatedAt: sql`now()`,
     })
@@ -90,13 +114,29 @@ export async function verifyParcel(
   return { ...result, fromCache: false };
 }
 
-/** Every buyer attached to the campaign, with their own criteria. */
-export async function loadCampaignBuilders(db: Db, campaignId: string): Promise<BuilderCriteria[]> {
+/**
+ * The buy boxes that apply to this parcel, one per builder on the campaign.
+ *
+ * A builder can have several — county-wide, plus tighter ones for a city or a
+ * zip. The most specific box that covers the lot wins, so a Cape Coral entry
+ * overrides the Lee County one without either being duplicated.
+ */
+export async function loadCampaignBuilders(
+  db: Db,
+  campaignId: string,
+  place?: { county: string; city?: string | null; zip?: string | null },
+): Promise<BuilderCriteria[]> {
   const rows = await db
     .select({
+      boxId: criteriaSets.id,
       builderId: builders.id,
       builderName: builders.name,
       markets: builders.markets,
+      name: criteriaSets.name,
+      county: criteriaSets.county,
+      cities: criteriaSets.cities,
+      zips: criteriaSets.zips,
+      utilityRules: criteriaSets.utilityRules,
       minSqft: criteriaSets.minSqft,
       allowedFloodZones: criteriaSets.allowedFloodZones,
       wetlandsAllowed: criteriaSets.wetlandsAllowed,
@@ -110,17 +150,41 @@ export async function loadCampaignBuilders(db: Db, campaignId: string): Promise<
     .innerJoin(criteriaSets, eq(criteriaSets.builderId, builders.id))
     .where(eq(campaignBuilders.campaignId, campaignId));
 
-  return rows.map((r) => ({
+  const boxes: BuyBox[] = rows.map((r) => ({
+    id: r.boxId,
     builderId: r.builderId,
     builderName: r.builderName,
-    markets: r.markets ?? undefined,
+    name: r.name ?? "Buy box",
+    // A box saved before scoping existed has no county; treat it as covering
+    // wherever it is being asked about rather than silently dropping it.
+    county: r.county ?? place?.county ?? "",
+    cities: r.cities ?? [],
+    zips: r.zips ?? [],
     minSqft: r.minSqft,
     allowedFloodZones: r.allowedFloodZones,
     wetlandsAllowed: r.wetlandsAllowed,
-    builderBuyPrice: toCents(r.builderBuyPrice),
-    minAssignmentFee: toCents(r.minAssignmentFee),
+    baseBuyPriceCents: toCents(r.builderBuyPrice),
+    minAssignmentFeeCents: toCents(r.minAssignmentFee),
     anchorPct: Number(r.anchorPct),
     concessionSteps: Array.isArray(r.concessionSteps) ? (r.concessionSteps as number[]) : undefined,
+    utilityRules: Array.isArray(r.utilityRules) ? (r.utilityRules as UtilityRule[]) : [],
+  }));
+
+  const applicable = place ? boxesForPlace(boxes, place) : boxes;
+  const markets = new Map(rows.map((r) => [r.builderId, r.markets]));
+
+  return applicable.map((b) => ({
+    builderId: b.builderId,
+    builderName: b.builderName,
+    markets: markets.get(b.builderId) ?? undefined,
+    minSqft: b.minSqft,
+    allowedFloodZones: b.allowedFloodZones,
+    wetlandsAllowed: b.wetlandsAllowed,
+    builderBuyPrice: b.baseBuyPriceCents,
+    minAssignmentFee: b.minAssignmentFeeCents,
+    anchorPct: b.anchorPct,
+    concessionSteps: b.concessionSteps,
+    utilityRules: b.utilityRules,
   }));
 }
 
@@ -236,4 +300,25 @@ async function recordChecks(
       detail: { summary: facts.sqft ? `${facts.sqft.toLocaleString("en-US")} sqft` : "size unknown", sqft: facts.sqft, byBuyer: perBuyer("sqft") },
     },
   ]);
+}
+
+/**
+ * County parcel addresses are a single situs string ("4158 NW 40TH AVE, CAPE
+ * CORAL"), so city and zip are parsed out of it rather than stored separately.
+ * Returning undefined is fine — a zip-scoped buy box declines rather than
+ * assuming, which is the safe direction.
+ */
+function cityFromAddress(address?: string): string | undefined {
+  if (!address) return undefined;
+  const parts = address.split(",").map((p) => p.trim()).filter(Boolean);
+  if (parts.length < 2) return undefined;
+  // Last part may be "FL 33993"; the city is the part before any state/zip tail.
+  const candidate = parts[parts.length - 1];
+  const isStateZip = /^[A-Z]{2}\s*\d{5}/.test(candidate) || /^\d{5}/.test(candidate);
+  return (isStateZip ? parts[parts.length - 2] : candidate) || undefined;
+}
+
+function zipFromAddress(address?: string): string | undefined {
+  const match = address?.match(/\b(\d{5})(?:-\d{4})?\b\s*$/);
+  return match?.[1];
 }

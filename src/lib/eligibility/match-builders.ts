@@ -1,4 +1,5 @@
 import { anchorOffer, maxOffer, type OfferCriteria } from "./offer-math";
+import { priceForUtilities, type ParcelUtilities, type UtilityRule } from "./buy-box";
 import { evaluateFloodZones, evaluateSqft, evaluateWetlands, type CheckOutcome } from "./rules";
 import type { FloodZoneHit } from "./fema";
 import type { WetlandHit } from "./nwi";
@@ -20,6 +21,8 @@ export type ParcelFacts = {
   sqft?: number;
   floodZones: FloodZoneHit[];
   wetlands: WetlandHit[];
+  /** What we determined about water and sewer. Undetermined stays undefined. */
+  utilities?: ParcelUtilities;
   /** True when a GIS service failed, so a "fits" verdict can't be trusted. */
   checksIncomplete: boolean;
 };
@@ -38,6 +41,11 @@ export type BuilderCriteria = {
   concessionSteps?: number[];
   /** Empty means the builder buys anywhere. */
   markets?: string[];
+  /**
+   * Price matrix over utilities. Empty means utilities don't move this buyer's
+   * price, and builderBuyPrice applies as-is.
+   */
+  utilityRules?: UtilityRule[];
 };
 
 export type BuilderMatch = {
@@ -85,8 +93,20 @@ export function matchBuilders(
       if (sqft.result === "error") failures.push("size unknown");
       if (!marketMatches(c, parcelMarket)) failures.push(`outside ${c.builderName}'s markets`);
 
+      // Utilities set the buy price before any offer math runs: the same lot is
+      // worth a different amount to the same buyer depending on whether the next
+      // owner connects or drills.
+      const utilityPrice = priceForUtilities(
+        {
+          baseBuyPriceCents: c.builderBuyPrice,
+          utilityRules: c.utilityRules ?? [],
+        } as Parameters<typeof priceForUtilities>[0],
+        facts.utilities ?? {},
+      );
+      if (!utilityPrice.accepted) failures.push(utilityPrice.reason);
+
       const oc: OfferCriteria = {
-        builderBuyPrice: c.builderBuyPrice,
+        builderBuyPrice: utilityPrice.accepted ? utilityPrice.buyPriceCents : c.builderBuyPrice,
         minAssignmentFee: c.minAssignmentFee,
         anchorPct: c.anchorPct,
         concessionSteps: c.concessionSteps,

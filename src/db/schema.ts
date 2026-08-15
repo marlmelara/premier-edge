@@ -93,6 +93,15 @@ export const parcels = pgTable(
      */
     floodZones: text("flood_zones").array(),
     wetlandsIntersects: boolean("wetlands_intersects"),
+    /**
+     * DOC AMENDMENT (Aug 15 2026): utilities decide the largest single price
+     * swing on a vacant lot — the next owner either connects or drills. Stored
+     * denormalized like the flood/wetland findings so the land bank is
+     * searchable on them. Null means undetermined, never "well/septic".
+     */
+    waterSource: text("water_source"),
+    sewerType: text("sewer_type"),
+    utilityDetail: text("utility_detail"),
     lastCheckedAt: timestamp("last_checked_at", { withTimezone: true }),
     ...timestamps,
   },
@@ -137,10 +146,31 @@ export const checks = pgTable("checks", {
  * Matching a parcel against every buyer's criteria is what keeps us from
  * negotiating on lots nobody wants.
  */
+/**
+ * A buy box. DOC AMENDMENT (Aug 15 2026), §5 + §10.
+ *
+ * Was one row per builder. A builder actually has several: the same buyer pays
+ * differently in Cape Coral than Lehigh Acres, and differently again depending
+ * on a lot's utilities. So this is now many-per-builder, scoped by
+ * county/city/zip, with a price matrix over water and sewer inside the single
+ * entry rather than a separate row per combination.
+ */
 export const criteriaSets = pgTable("criteria_sets", {
   id: uuid("id").primaryKey().defaultRandom(),
   /** Nullable only so pre-amendment rows survive; new criteria always name a builder. */
   builderId: uuid("builder_id"),
+  /** Marlon's name for it — "Cape Coral standard". */
+  name: text("name"),
+  /** Where it applies. County is the required scope; city and zip narrow it. */
+  county: text("county"),
+  cities: text("cities").array(),
+  zips: text("zips").array(),
+  /**
+   * Price matrix over utilities: [{ water, sewer, buyPriceCents?, accepted }].
+   * Empty/null means utilities don't affect this buyer's price. Absolute
+   * amounts, not deductions — Marlon quotes them that way.
+   */
+  utilityRules: jsonb("utility_rules"),
   minSqft: integer("min_sqft").notNull(),
   allowedFloodZones: text("allowed_flood_zones")
     .array()

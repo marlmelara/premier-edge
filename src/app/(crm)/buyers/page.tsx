@@ -1,7 +1,8 @@
-import { eq } from "drizzle-orm";
+
 import { getDb } from "@/db";
 import { builders, campaignBuilders, campaigns, criteriaSets } from "@/db/schema";
 import { BuyerList, type BuyerRow } from "@/components/buyer-list";
+import type { UtilityRule } from "@/lib/eligibility/buy-box";
 
 export const dynamic = "force-dynamic";
 export const metadata = { title: "Buyers — Premier Edge" };
@@ -14,7 +15,7 @@ export const metadata = { title: "Buyers — Premier Edge" };
 export default async function BuyersPage() {
   const db = getDb();
 
-  const [rows, campaignRows, links] = await Promise.all([
+  const [rows, campaignRows, links, boxRows] = await Promise.all([
     db
       .select({
         builderId: builders.id,
@@ -24,30 +25,52 @@ export default async function BuyersPage() {
         phone: builders.phone,
         markets: builders.markets,
         notes: builders.notes,
+      })
+      .from(builders)
+      .orderBy(builders.name),
+    db.select({ id: campaigns.id, name: campaigns.name }).from(campaigns).orderBy(campaigns.name),
+    db.select({ campaignId: campaignBuilders.campaignId, builderId: campaignBuilders.builderId }).from(campaignBuilders),
+    // Buy boxes are many-per-buyer now, so they're loaded separately and
+    // grouped — joining them would duplicate a builder once per box.
+    db
+      .select({
+        id: criteriaSets.id,
+        builderId: criteriaSets.builderId,
+        name: criteriaSets.name,
+        county: criteriaSets.county,
+        cities: criteriaSets.cities,
+        zips: criteriaSets.zips,
         minSqft: criteriaSets.minSqft,
         allowedFloodZones: criteriaSets.allowedFloodZones,
         wetlandsAllowed: criteriaSets.wetlandsAllowed,
         builderBuyPrice: criteriaSets.builderBuyPrice,
         minAssignmentFee: criteriaSets.minAssignmentFee,
         anchorPct: criteriaSets.anchorPct,
-        maxOffer: criteriaSets.maxOffer,
+        utilityRules: criteriaSets.utilityRules,
       })
-      .from(builders)
-      .leftJoin(criteriaSets, eq(criteriaSets.builderId, builders.id))
-      .orderBy(builders.name),
-    db.select({ id: campaigns.id, name: campaigns.name }).from(campaigns).orderBy(campaigns.name),
-    db.select({ campaignId: campaignBuilders.campaignId, builderId: campaignBuilders.builderId }).from(campaignBuilders),
+      .from(criteriaSets),
   ]);
 
   const buyers: BuyerRow[] = rows.map((r) => ({
     ...r,
-    minSqft: r.minSqft ?? undefined,
-    allowedFloodZones: r.allowedFloodZones ?? ["X"],
-    wetlandsAllowed: r.wetlandsAllowed ?? false,
-    builderBuyPrice: r.builderBuyPrice ?? undefined,
-    minAssignmentFee: r.minAssignmentFee ?? undefined,
-    anchorPct: r.anchorPct ?? undefined,
+    maxOffer: null,
     campaignIds: links.filter((l) => l.builderId === r.builderId).map((l) => l.campaignId),
+    boxes: boxRows
+      .filter((b) => b.builderId === r.builderId)
+      .map((b) => ({
+        id: b.id,
+        name: b.name,
+        county: b.county,
+        cities: b.cities,
+        zips: b.zips,
+        minSqft: b.minSqft,
+        allowedFloodZones: b.allowedFloodZones,
+        wetlandsAllowed: b.wetlandsAllowed,
+        builderBuyPrice: b.builderBuyPrice,
+        minAssignmentFee: b.minAssignmentFee,
+        anchorPct: b.anchorPct,
+        utilityRules: Array.isArray(b.utilityRules) ? (b.utilityRules as UtilityRule[]) : [],
+      })),
   }));
 
   return (
