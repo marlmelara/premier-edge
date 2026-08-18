@@ -84,3 +84,39 @@ describe("searchTermFor", () => {
     expect(searchTermFor({ propertyAddress: "n/a" })).toBeNull();
   });
 });
+
+describe("pickConfidentMatch — county address suffixes", () => {
+  it("matches when the county appends the city and the list doesn't", () => {
+    // The bug that stopped every Lee auto-resolve: Sendivo carries
+    // "1841 Ne 2nd St" while Lee returns "1841 NE 2ND ST, CAPE CORAL".
+    // Whole-string equality fails on a lot that is plainly the same one.
+    const result = pickConfidentMatch("1841 Ne 2nd St", [parcel("A", "1841 NE 2ND ST, CAPE CORAL")]);
+    expect(result.matched).toBe(true);
+    if (result.matched) expect(result.parcel.parcelId).toBe("A");
+  });
+
+  it("still refuses a different house number on the same street", () => {
+    // Tolerating the city suffix must not tolerate the part that identifies
+    // the lot.
+    expect(pickConfidentMatch("1841 Ne 2nd St", [parcel("A", "1843 NE 2ND ST, CAPE CORAL")]).matched).toBe(false);
+  });
+
+  it("uses the city to break a tie between two towns in one county", () => {
+    const result = pickConfidentMatch(
+      "100 Main St",
+      [parcel("A", "100 MAIN ST, CAPE CORAL"), parcel("B", "100 MAIN ST, FORT MYERS")],
+      "Fort Myers",
+    );
+    expect(result.matched).toBe(true);
+    if (result.matched) expect(result.parcel.parcelId).toBe("B");
+  });
+
+  it("stays ambiguous when two towns tie and we don't know the city", () => {
+    const result = pickConfidentMatch("100 Main St", [
+      parcel("A", "100 MAIN ST, CAPE CORAL"),
+      parcel("B", "100 MAIN ST, FORT MYERS"),
+    ]);
+    expect(result.matched).toBe(false);
+    if (!result.matched) expect(result.reason).toBe("ambiguous");
+  });
+});

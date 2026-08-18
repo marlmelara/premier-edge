@@ -13,9 +13,14 @@ const classificationSchema = z.object({
   classification: z.enum(INBOUND_CLASSES),
   confidence: z.number().min(0).max(1),
   seller_counter_amount: z.number().nullable(),
-  /** Utilities the seller states the lot has. Null when they didn't say. */
-  utilities_water: z.enum(["city", "well"]).nullable(),
-  utilities_sewer: z.enum(["city", "septic"]).nullable(),
+  /**
+   * "unknown" rather than null on the wire. A nullable enum is rejected by the
+   * API's schema validator — `type: ["string","null"]` with null in the enum
+   * returns 400 and fails EVERY classification, which escalates every thread.
+   * A sentinel keeps the enum a plain string list, and it becomes null here.
+   */
+  utilities_water: z.enum(["city", "well", "unknown"]).transform((v) => (v === "unknown" ? null : v)),
+  utilities_sewer: z.enum(["city", "septic", "unknown"]).transform((v) => (v === "unknown" ? null : v)),
   reasoning: z.string(),
 });
 
@@ -31,14 +36,14 @@ const CLASSIFICATION_JSON_SCHEMA = {
       description: "Dollar amount the seller named as their price, or null if they named none.",
     },
     utilities_water: {
-      type: ["string", "null"],
-      enum: ["city", "well", null],
-      description: "Water source the seller says the lot has, or null if not mentioned.",
+      type: "string",
+      enum: ["city", "well", "unknown"],
+      description: 'Water source the seller says the lot has. "unknown" if they did not say.',
     },
     utilities_sewer: {
-      type: ["string", "null"],
-      enum: ["city", "septic", null],
-      description: "Sewer type the seller says the lot has, or null if not mentioned.",
+      type: "string",
+      enum: ["city", "septic", "unknown"],
+      description: 'Sewer type the seller says the lot has. "unknown" if they did not say.',
     },
     reasoning: { type: "string" },
   },
@@ -69,7 +74,7 @@ Pick exactly one classification:
 
 Set confidence to how certain you are. Use off_script when unsure rather than guessing.
 If the seller names a dollar amount as their asking price, put the number in seller_counter_amount; otherwise null. Record it even when the number is far above what any buyer would pay — an unrealistic asking price is still worth knowing, and classify it as counter_offer rather than hostile.
-If the seller says anything about the lot's utilities, record it: utilities_water is "city" for city/county/public water and "well" for a private well; utilities_sewer is "city" for city/county/public sewer and "septic" for a septic tank. Leave either null when they didn't say. Capture this from any message, not only a reply to a direct question — sellers often volunteer it.
+If the seller says anything about the lot's utilities, record it: utilities_water is "city" for city/county/public water and "well" for a private well; utilities_sewer is "city" for city/county/public sewer and "septic" for a septic tank. Use "unknown" for either when they did not say. Capture this from any message, not only a reply to a direct question — sellers often volunteer it.
 
 Keep reasoning to one sentence.`;
 

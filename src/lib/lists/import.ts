@@ -157,7 +157,7 @@ async function resolveParcel(db: Db, row: ListRow, county: CountyKey): Promise<R
 
   const adapter = getAdapter(county);
   const candidates = await adapter.searchByAddress(term);
-  const match = pickConfidentMatch(row.propertyAddress!, candidates);
+  const match = pickConfidentMatch(row.propertyAddress!, candidates, row.propertyCity);
   if (!match.matched) {
     const detail =
       match.reason === "no_candidates"

@@ -168,6 +168,9 @@ async function resolveFromSendivoAddress(
   const enrichment = raw as Record<string, unknown>;
   const address = typeof enrichment.property_address === "string" ? enrichment.property_address : null;
   if (!address) return false;
+  // Sendivo carries the city too; it decides between two cities in one county
+  // that share a street address.
+  const city = typeof enrichment.property_city === "string" ? enrichment.property_city : null;
 
   const term = searchTermFor({ propertyAddress: address });
   if (!term) return false;
@@ -176,7 +179,7 @@ async function resolveFromSendivoAddress(
   for (const county of listCounties()) {
     try {
       const candidates = await getAdapter(county).searchByAddress(term);
-      const match = pickConfidentMatch(address, candidates);
+      const match = pickConfidentMatch(address, candidates, city);
       if (match.matched) hits.push({ county, parcelId: match.parcel.parcelId, address: match.parcel.address });
     } catch {
       // One county's GIS being down must not stop the others from answering.

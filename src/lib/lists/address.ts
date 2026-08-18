@@ -82,18 +82,48 @@ export type AddressMatch =
   | { matched: false; reason: "no_candidates" | "no_exact_match" | "ambiguous"; candidates: number };
 
 /**
+ * The street line alone — everything before the first comma.
+ *
+ * Counties are inconsistent about what else they append. Lee returns
+ * "1841 NE 2ND ST, CAPE CORAL" while a list carries "1841 Ne 2nd St", so
+ * comparing whole strings fails on a lot that is plainly the same one. The
+ * house number and street are what identify the parcel; the city is a suffix,
+ * and it is checked separately when we know it.
+ */
+export function streetLine(address: string): string {
+  return normalizeAddress(address.split(",")[0]);
+}
+
+/**
  * Pick the one parcel whose address is the same address, or admit we can't
  * tell. Never returns a "close enough" result — a near-miss on a land parcel
  * is a different lot, not a typo.
  */
-export function pickConfidentMatch(query: string, candidates: ParcelRecord[]): AddressMatch {
+export function pickConfidentMatch(
+  query: string,
+  candidates: ParcelRecord[],
+  /** The city the lot is in, when we know it. Only ever narrows, never widens. */
+  expectedCity?: string | null,
+): AddressMatch {
   if (candidates.length === 0) return { matched: false, reason: "no_candidates", candidates: 0 };
 
-  const target = normalizeAddress(query);
-  const exact = candidates.filter((c) => c.address && normalizeAddress(c.address) === target);
+  // Street line to street line. Still exact on house number and street — the
+  // parts that identify the lot — just tolerant of the city a county appends.
+  const target = streetLine(query);
+  let exact = candidates.filter((c) => c.address && streetLine(c.address) === target);
+
+  if (exact.length === 0) return { matched: false, reason: "no_exact_match", candidates: candidates.length };
+
+  // Two cities in one county can share a street address. When we know which
+  // city, that decides it; when we don't, ambiguity stands and a human looks.
+  if (exact.length > 1 && expectedCity) {
+    const city = normalizeAddress(expectedCity);
+    const inCity = exact.filter((c) => c.address && normalizeAddress(c.address).includes(city));
+    if (inCity.length === 1) return { matched: true, parcel: inCity[0] };
+    if (inCity.length > 0) exact = inCity;
+  }
 
   if (exact.length === 1) return { matched: true, parcel: exact[0] };
-  if (exact.length === 0) return { matched: false, reason: "no_exact_match", candidates: candidates.length };
 
   // Several parcels share one situs address — common where a lot was split.
   // Picking one at random would be a coin flip on which land we negotiate for.
