@@ -1,6 +1,6 @@
 import { eq } from "drizzle-orm";
 import type { Db } from "@/db";
-import { agentActions, contacts, conversations, deals, messages, optOuts } from "@/db/schema";
+import { agentActions, contacts, conversations, deals, messages, optOuts, parcels } from "@/db/schema";
 import { sendConversationMessage } from "./client";
 
 /**
@@ -13,10 +13,34 @@ export type SendResult =
   | { ok: true; messageId: string }
   | { ok: false; blocked: "opted_out" | "quiet_hours" | "no_sendivo_conversation" | "send_failed"; reason: string };
 
-/** Quiet hours: 8am–9pm seller-local. Launch counties are all Eastern. */
-export function isWithinQuietHours(now: Date = new Date()): boolean {
+/**
+ * Seller-local timezone, keyed by the county the lot is in (§6).
+ *
+ * Every launch county is Eastern, so this looks redundant today — but the rule
+ * is "8am-9pm *seller-local*", and hardcoding Eastern means the first
+ * Central-time county silently starts texting people at 7am. That is a 10DLC
+ * violation, not a cosmetic bug, and it would ship unnoticed because it looks
+ * correct from Florida.
+ *
+ * Unknown county falls back to Eastern, which is the conservative direction for
+ * a Florida-first business: it opens later and closes earlier than Central.
+ */
+const COUNTY_TIMEZONE: Record<string, string> = {
+  lee: "America/New_York",
+  charlotte: "America/New_York",
+  st_lucie: "America/New_York",
+};
+
+export const DEFAULT_TIMEZONE = "America/New_York";
+
+export function timezoneForCounty(county?: string | null): string {
+  return (county && COUNTY_TIMEZONE[county]) || DEFAULT_TIMEZONE;
+}
+
+/** Quiet hours: outside 8am–9pm in the seller's own timezone. */
+export function isWithinQuietHours(now: Date = new Date(), timeZone: string = DEFAULT_TIMEZONE): boolean {
   const hour = Number(
-    new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", hour: "numeric", hour12: false }).format(now),
+    new Intl.DateTimeFormat("en-US", { timeZone, hour: "numeric", hour12: false }).format(now),
   );
   return hour < 8 || hour >= 21;
 }
@@ -52,8 +76,13 @@ export async function sendSellerMessage(
     return block("opted_out", `${contact.phone} opted out`);
   }
 
-  if (isWithinQuietHours()) {
-    return block("quiet_hours", "outside 8am–9pm seller-local");
+  // Seller-local, from the lot's county rather than ours.
+  const parcel = deal?.parcelId
+    ? await db.query.parcels.findFirst({ where: eq(parcels.id, deal.parcelId) })
+    : null;
+  const timeZone = timezoneForCounty(parcel?.county);
+  if (isWithinQuietHours(new Date(), timeZone)) {
+    return block("quiet_hours", `outside 8am–9pm in ${timeZone}`);
   }
 
   if (!conversation.sendivoConversationId || !/^\d+$/.test(conversation.sendivoConversationId)) {

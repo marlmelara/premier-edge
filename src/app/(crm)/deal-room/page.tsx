@@ -3,6 +3,7 @@ import { Badge } from "@/components/ui/badge";
 import { Composer } from "@/components/composer";
 import { ContextCard } from "@/components/context-card";
 import { DraftCard } from "@/components/draft-card";
+import { EscalationBanner } from "@/components/escalation-banner";
 import { PollRefresh } from "@/components/poll-refresh";
 import { getDb } from "@/db";
 import { getPendingDraft } from "@/lib/agent/drafts";
@@ -125,6 +126,12 @@ export default async function DealRoomPage({
                 </div>
               ))}
             </div>
+            {detail.conversation.escalated && (
+              <EscalationBanner
+                conversationId={detail.conversation.id}
+                reason={detail.conversation.escalationReason}
+              />
+            )}
             {pendingDraft && <DraftCard conversationId={detail.conversation.id} draft={pendingDraft} />}
             <Composer
               conversationId={detail.conversation.id}

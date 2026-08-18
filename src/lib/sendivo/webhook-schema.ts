@@ -198,10 +198,51 @@ export function normalizePhone(raw: string): string {
   return `+${digits}`;
 }
 
-const OPT_OUT_KEYWORDS = ["stop", "stopall", "unsubscribe", "cancel", "end", "quit", "revoke", "optout", "opt out"];
+/**
+ * CTIA/10DLC opt-out keywords, English and Spanish.
+ *
+ * The Spanish set is not optional politeness. A large share of Florida land
+ * owners reply in Spanish, and a missed opt-out is the worst compliance failure
+ * available to a 10DLC sender — it is the one that gets a number blocked and a
+ * campaign shut down. "PARE", "ALTO" and "BASTA" mean stop, and a sender who
+ * only recognizes English keeps texting someone who told it to stop.
+ *
+ * Accents are stripped before matching, so "detén" and "deten" both count.
+ *
+ * Deliberately NOT here: a bare "no". A seller answering "no" to "are you
+ * interested in selling?" is declining this deal, not withdrawing consent —
+ * that is `not_interested`, and their lot stays in the land bank for a future
+ * buyer. Suppressing them would silently destroy a lead we could work again,
+ * and over-suppression is invisible in a way under-suppression is not.
+ */
+const OPT_OUT_KEYWORDS = [
+  // English — the CTIA-required set plus common variants.
+  "stop", "stopall", "unsubscribe", "cancel", "end", "quit", "revoke", "optout", "opt out",
+  // Spanish. Only unambiguous stop/remove requests belong here.
+  "pare", "paren", "parar", "alto", "basta", "detener", "deten", "detente",
+  "cancelar", "cancele", "baja", "darse de baja", "dar de baja",
+  "eliminar", "eliminame", "borrar", "borrame", "quitar", "quiteme", "quitame",
+  "sacame", "no me escriba", "no me escriban", "no me escribas",
+  "no me mande mensajes", "no mas mensajes", "no quiero mensajes",
+]
 
-/** CTIA/10DLC opt-out keyword detection: the message must BE the keyword, not merely contain it. */
+/** Strip accents so "detén" matches "deten" without listing both. */
+function fold(value: string): string {
+  return value
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase();
+}
+
+/**
+ * CTIA/10DLC opt-out detection: the message must BE the keyword, not merely
+ * contain it — "stop by the lot next week" is not an opt-out, and treating it
+ * as one loses a live deal.
+ */
 export function isOptOutMessage(body: string): boolean {
-  const normalized = body.trim().toLowerCase().replace(/[.!]+$/, "");
+  const normalized = fold(body.trim())
+    .replace(/[.!¡?¿,]+$/g, "")
+    .replace(/^[¡¿]+/g, "")
+    .trim();
   return OPT_OUT_KEYWORDS.includes(normalized);
 }

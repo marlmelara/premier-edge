@@ -5,7 +5,7 @@ import { and, eq, sql } from "drizzle-orm";
 import { auth } from "@/auth";
 import { isCountyKey } from "@/adapters/registry";
 import { getDb } from "@/db";
-import { agentActions, contactParcels, contacts, deals, offers, parcels } from "@/db/schema";
+import { agentActions, contactParcels, contacts, conversations, deals, offers, parcels } from "@/db/schema";
 import { attachParcelToDeal } from "@/lib/deals/attach-parcel";
 import { verifyParcel } from "@/lib/eligibility/verify-parcel";
 import { fromCents } from "@/lib/eligibility/offer-math";
@@ -325,5 +325,45 @@ export async function setParcelUtilitiesAction(
 
   revalidatePath("/deal-room");
   revalidatePath("/land-bank");
+  return { ok: true as const };
+}
+
+/**
+ * Hand an escalated thread back to the agent.
+ *
+ * Escalation was a one-way door: `escalated` was set and nothing anywhere ever
+ * cleared it, so a thread Marlon had already dealt with stayed in the queue
+ * forever. Now that escalations are rare and mean something, being unable to
+ * clear them is what makes the queue untrustworthy.
+ *
+ * The state goes back to where the conversation actually is, not to NEW — a
+ * thread escalated mid-negotiation resumes negotiating.
+ */
+export async function resolveEscalationAction(
+  conversationId: string,
+  resume: "QUALIFYING" | "NEGOTIATING" | "OFFER_SENT" = "QUALIFYING",
+) {
+  await requireSession();
+  const db = getDb();
+
+  const conversation = await db.query.conversations.findFirst({
+    where: eq(conversations.id, conversationId),
+  });
+  if (!conversation) return { ok: false as const, reason: "conversation not found" };
+  if (!conversation.escalated) return { ok: false as const, reason: "this thread isn't escalated" };
+
+  await db
+    .update(conversations)
+    .set({ escalated: false, escalationReason: null, state: resume, updatedAt: new Date() })
+    .where(eq(conversations.id, conversationId));
+
+  await db.insert(agentActions).values({
+    conversationId,
+    type: "escalation_resolved",
+    input: { was: conversation.escalationReason, resumedAt: resume },
+    approvedBy: "marlon",
+  });
+
+  revalidatePath("/deal-room");
   return { ok: true as const };
 }

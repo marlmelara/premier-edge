@@ -8,7 +8,6 @@ import { KillSwitch } from "@/components/kill-switch";
 import { CampaignManager } from "@/components/campaign-list";
 import { WebhookHealth } from "@/components/webhook-health";
 import { listCampaignsWithGate } from "@/lib/queries";
-import { getRedis } from "@/lib/redis";
 import { formatDateTime } from "@/lib/format";
 
 export const dynamic = "force-dynamic";
@@ -64,7 +63,9 @@ export default async function CampaignsPage() {
       .then((r) => r[0]),
   ]);
 
-  const redisAvailable = getRedis() !== null;
+  // The kill switch is Postgres-backed now, so it always works — Redis is only
+  // a cache in front of it.
+  const killSwitchAvailable = true;
   const killSwitchOn = await isKillSwitchOn();
   const campaignGates = await listCampaignsWithGate(metrics.ok, hasAnthropicKey());
 
@@ -122,7 +123,7 @@ export default async function CampaignsPage() {
       <section>
         <div className="flex items-center justify-between">
           <h2 className="text-sm font-semibold text-muted-foreground">Agent stats (autonomy evidence)</h2>
-          <KillSwitch initialOn={killSwitchOn} available={redisAvailable} />
+          <KillSwitch initialOn={killSwitchOn} available={killSwitchAvailable} />
         </div>
         <div className="mt-2 grid grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-6">
           <Tile label="Drafts" value={agentStats.drafts.toString()} hint="M3" />

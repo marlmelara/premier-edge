@@ -212,3 +212,33 @@ describe("verifyWebhookSignature", () => {
     if (!result.ok) expect(result.reason).toBe("missing_signature");
   });
 });
+
+describe("isOptOutMessage — Spanish", () => {
+  it("honours Spanish stop words", () => {
+    // A missed opt-out is the failure that gets a 10DLC number blocked, and a
+    // large share of Florida land owners reply in Spanish.
+    for (const word of ["PARE", "alto", "Basta", "cancelar", "baja", "quitame", "no me escriban"]) {
+      expect(isOptOutMessage(word)).toBe(true);
+    }
+  });
+
+  it("matches with accents and Spanish punctuation", () => {
+    expect(isOptOutMessage("detén")).toBe(true);
+    expect(isOptOutMessage("¡Pare!")).toBe(true);
+    expect(isOptOutMessage("BASTA.")).toBe(true);
+  });
+
+  it("does NOT treat a bare 'no' as an opt-out", () => {
+    // "no" answers "are you interested in selling?" — that is not_interested,
+    // and their lot stays in the land bank. Suppressing them would silently
+    // destroy a lead we could work again next year.
+    expect(isOptOutMessage("no")).toBe(false);
+    expect(isOptOutMessage("No")).toBe(false);
+    expect(isOptOutMessage("no gracias")).toBe(false);
+  });
+
+  it("still requires the message to BE the keyword", () => {
+    expect(isOptOutMessage("pare junto a mi lote")).toBe(false);
+    expect(isOptOutMessage("stop by the lot next week")).toBe(false);
+  });
+});
