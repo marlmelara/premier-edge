@@ -6,6 +6,7 @@ import { DraftCard } from "@/components/draft-card";
 import { EscalationBanner } from "@/components/escalation-banner";
 import { PollRefresh } from "@/components/poll-refresh";
 import { getDb } from "@/db";
+import { campaigns } from "@/db/schema";
 import { getPendingDraft } from "@/lib/agent/drafts";
 import { formatDateTime, formatPhone, timeAgo } from "@/lib/format";
 import { getConversationDetail, listConversations } from "@/lib/queries";
@@ -33,6 +34,8 @@ export default async function DealRoomPage({
     state: filter === "opted-out" ? "OPTED_OUT" : undefined,
   });
   const detail = selectedId ? await getConversationDetail(selectedId) : null;
+  // Needed to let a deal be put on the right campaign when several run.
+  const allCampaigns = await getDb().select({ id: campaigns.id, name: campaigns.name }).from(campaigns);
   const pendingDraft = selectedId ? await getPendingDraft(getDb(), selectedId) : null;
 
   return (
@@ -152,6 +155,7 @@ export default async function DealRoomPage({
             criteria={detail.criteria}
             contracts={detail.contracts}
             ownedParcels={detail.ownedParcels}
+            campaigns={allCampaigns}
           />
         ) : (
           <div className="p-4 text-sm text-muted-foreground">Property context appears here.</div>

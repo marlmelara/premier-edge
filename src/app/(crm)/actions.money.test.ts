@@ -21,6 +21,7 @@ const { getDb } = await import("@/db");
 const { agentActions, builders, contactParcels, contacts, conversations, criteriaSets, deals, offers, parcels } =
   await import("@/db/schema");
 const { detachParcelAction, resolveDraftAction } = await import("./actions");
+const { loadOfferCriteria } = await import("@/lib/agent/thread-state");
 const { sendSellerMessage } = await import("@/lib/sendivo/send");
 
 let db: ReturnType<typeof getDb>;
@@ -167,6 +168,84 @@ describe.skipIf(process.env.RUN_DB !== "1")("money paths", () => {
     const second = await resolveDraftAction(conversation.id, draft.id, { action: "approve", body: "again" });
     expect(second.ok).toBe(false);
     expect(sendSellerMessage).toHaveBeenCalledOnce();
+  });
+
+  it("prices off the scoped buy box and the lot's utilities, not the base price", async () => {
+    // The bug this pins: loadOfferCriteria used findFirst by builder, so with
+    // several buy boxes it picked an arbitrary one and always read the base
+    // price. A Cape Coral lot on septic would have been priced off the
+    // headline number and the spread would vanish at closing.
+    const { deal, parcel, builder } = await seedDealWithParcel();
+
+    await db
+      .update(parcels)
+      .set({ address: "1 TEST LN, CAPE CORAL", waterSource: "city", sewerType: "septic" })
+      .where(eq(parcels.id, parcel.id));
+
+    // A county-wide box the lot also matches, and a tighter Cape Coral one.
+    await db.insert(criteriaSets).values([
+      {
+        builderId: builder.id,
+        name: "Lee county-wide",
+        county: "lee",
+        minSqft: 5000,
+        allowedFloodZones: ["X"],
+        wetlandsAllowed: false,
+        builderBuyPrice: "200000.00",
+        minAssignmentFee: "5000.00",
+        anchorPct: "0.780",
+      },
+      {
+        builderId: builder.id,
+        name: "Cape Coral",
+        county: "lee",
+        cities: ["Cape Coral"],
+        minSqft: 5000,
+        allowedFloodZones: ["X"],
+        wetlandsAllowed: false,
+        builderBuyPrice: "135000.00",
+        minAssignmentFee: "5000.00",
+        anchorPct: "0.780",
+        utilityRules: [
+          { water: "city", sewer: "city", buyPriceCents: 13_500_000, accepted: true },
+          { water: "city", sewer: "septic", buyPriceCents: 12_000_000, accepted: true },
+        ],
+      },
+    ]);
+
+    const [full] = await db.select().from(deals).where(eq(deals.id, deal.id));
+    const criteria = await loadOfferCriteria(db, full);
+
+    // Cape Coral beats county-wide, and septic beats the base price.
+    expect(criteria).not.toBeNull();
+    expect(criteria!.builderBuyPrice).toBe(12_000_000);
+    expect(criteria!.minAssignmentFee).toBe(500_000);
+  });
+
+  it("refuses to price when the buyer won't take the lot's utilities", async () => {
+    const { deal, parcel, builder } = await seedDealWithParcel();
+    await db
+      .update(parcels)
+      .set({ address: "1 TEST LN, CAPE CORAL", waterSource: "well", sewerType: "city" })
+      .where(eq(parcels.id, parcel.id));
+
+    await db.insert(criteriaSets).values({
+      builderId: builder.id,
+      name: "Cape Coral",
+      county: "lee",
+      minSqft: 5000,
+      allowedFloodZones: ["X"],
+      wetlandsAllowed: false,
+      builderBuyPrice: "135000.00",
+      minAssignmentFee: "5000.00",
+      anchorPct: "0.780",
+      utilityRules: [{ water: "well", sewer: "city", accepted: false }],
+    });
+
+    const [full] = await db.select().from(deals).where(eq(deals.id, deal.id));
+    // No criteria means no price is authorized at all — the correct outcome
+    // for a combination this buyer refuses.
+    expect(await loadOfferCriteria(db, full)).toBeNull();
   });
 
   it("clears every number derived from the lot when the parcel is detached", async () => {

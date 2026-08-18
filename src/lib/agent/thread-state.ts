@@ -1,7 +1,8 @@
 import { eq, sql } from "drizzle-orm";
 import type { Db } from "@/db";
-import { agentActions, criteriaSets, messages } from "@/db/schema";
+import { agentActions, criteriaSets, messages, parcels } from "@/db/schema";
 import { toCents, type OfferCriteria } from "@/lib/eligibility/offer-math";
+import { boxesForPlace, priceForUtilities, type BuyBox, type UtilityRule } from "@/lib/eligibility/buy-box";
 
 /**
  * Facts about a thread that the negotiation policy needs but can't derive from
@@ -10,28 +11,124 @@ import { toCents, type OfferCriteria } from "@/lib/eligibility/offer-math";
  */
 
 /**
- * The buy box this lot's price comes from — the matched buyer's, not a campaign
- * default. Returns null when the due-diligence gate hasn't been cleared: no
- * passing verdict, no matched builder, or no criteria set. Anything less and
- * we'd be pricing a lot we can't actually sell.
+ * The buy box this lot's price comes from, resolved the same way eligibility
+ * resolved it.
+ *
+ * This used to `findFirst` a criteria set by builder id, which was correct when
+ * a builder had exactly one. Once buy boxes became many-per-builder — scoped by
+ * county, city and zip, carrying a utility price matrix — that returned an
+ * *arbitrary* row with no ordering, and read the base price while ignoring
+ * utilities entirely.
+ *
+ * The consequence was silent and expensive: a Cape Coral lot on city water and
+ * septic would be priced off the buyer's headline number rather than their
+ * septic number, and the anchor would land thousands of dollars above what the
+ * deal could actually carry. Nothing would look wrong until the spread vanished
+ * at closing.
+ *
+ * So the same two steps eligibility performs run here: pick the most specific
+ * box covering the lot, then price it for the utilities the lot actually has.
+ *
+ * Returns null when the due-diligence gate hasn't been cleared, when no box
+ * covers the lot, or when the buyer won't take these utilities at any price.
  */
 export async function loadOfferCriteria(
   db: Db,
-  deal: { verdict: string; matchedBuilderId: string | null } | null | undefined,
+  deal:
+    | {
+        verdict: string;
+        matchedBuilderId: string | null;
+        parcelId?: string | null;
+        campaignId?: string | null;
+      }
+    | null
+    | undefined,
 ): Promise<OfferCriteria | null> {
   if (!deal || deal.verdict !== "pass" || !deal.matchedBuilderId) return null;
 
-  const criteria = await db.query.criteriaSets.findFirst({
-    where: eq(criteriaSets.builderId, deal.matchedBuilderId),
+  const rows = await db
+    .select({
+      id: criteriaSets.id,
+      builderId: criteriaSets.builderId,
+      name: criteriaSets.name,
+      county: criteriaSets.county,
+      cities: criteriaSets.cities,
+      zips: criteriaSets.zips,
+      minSqft: criteriaSets.minSqft,
+      allowedFloodZones: criteriaSets.allowedFloodZones,
+      wetlandsAllowed: criteriaSets.wetlandsAllowed,
+      builderBuyPrice: criteriaSets.builderBuyPrice,
+      minAssignmentFee: criteriaSets.minAssignmentFee,
+      anchorPct: criteriaSets.anchorPct,
+      concessionSteps: criteriaSets.concessionSteps,
+      utilityRules: criteriaSets.utilityRules,
+    })
+    .from(criteriaSets)
+    .where(eq(criteriaSets.builderId, deal.matchedBuilderId));
+
+  if (rows.length === 0) return null;
+
+  const parcel = deal.parcelId
+    ? await db.query.parcels.findFirst({ where: eq(parcels.id, deal.parcelId) })
+    : null;
+
+  const boxes: BuyBox[] = rows.map((r) => ({
+    id: r.id,
+    builderId: r.builderId ?? deal.matchedBuilderId!,
+    builderName: "",
+    name: r.name ?? "Buy box",
+    // A box saved before scoping existed has no county; treat it as covering
+    // wherever it is being asked about rather than dropping it silently.
+    county: r.county ?? parcel?.county ?? "",
+    cities: r.cities ?? [],
+    zips: r.zips ?? [],
+    minSqft: r.minSqft,
+    allowedFloodZones: r.allowedFloodZones,
+    wetlandsAllowed: r.wetlandsAllowed,
+    baseBuyPriceCents: toCents(r.builderBuyPrice),
+    minAssignmentFeeCents: toCents(r.minAssignmentFee),
+    anchorPct: Number(r.anchorPct),
+    concessionSteps: Array.isArray(r.concessionSteps) ? (r.concessionSteps as number[]) : undefined,
+    utilityRules: Array.isArray(r.utilityRules) ? (r.utilityRules as UtilityRule[]) : [],
+  }));
+
+  const box = parcel
+    ? boxesForPlace(boxes, {
+        county: parcel.county,
+        city: cityOf(parcel.address),
+        zip: zipOf(parcel.address),
+      })[0]
+    : boxes[0];
+
+  if (!box) return null;
+
+  // Utilities set the buy price before any offer math runs.
+  const price = priceForUtilities(box, {
+    water: (parcel?.waterSource as "city" | "well" | null) ?? undefined,
+    sewer: (parcel?.sewerType as "city" | "septic" | null) ?? undefined,
   });
-  if (!criteria) return null;
+  if (!price.accepted) return null;
 
   return {
-    builderBuyPrice: toCents(criteria.builderBuyPrice),
-    minAssignmentFee: toCents(criteria.minAssignmentFee),
-    anchorPct: Number(criteria.anchorPct),
-    concessionSteps: Array.isArray(criteria.concessionSteps) ? (criteria.concessionSteps as number[]) : undefined,
+    builderBuyPrice: price.buyPriceCents,
+    minAssignmentFee: box.minAssignmentFeeCents,
+    anchorPct: box.anchorPct,
+    concessionSteps: box.concessionSteps,
   };
+}
+
+/** County situs addresses are one string; city and zip are parsed back out. */
+function cityOf(address?: string | null): string | undefined {
+  if (!address) return undefined;
+  const parts = address.split(",").map((p) => p.trim()).filter(Boolean);
+  if (parts.length < 2) return undefined;
+  const last = parts[parts.length - 1];
+  const isStateZip = /^[A-Z]{2}\s*\d{5}/.test(last) || /^\d{5}/.test(last);
+  return (isStateZip ? parts[parts.length - 2] : last) || undefined;
+}
+
+function zipOf(address?: string | null): string | undefined {
+  return address?.match(/\b(\d{5})(?:-\d{4})?\b\s*$/)?.[1];
 }
 
 /**

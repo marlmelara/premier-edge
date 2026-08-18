@@ -1,8 +1,8 @@
-import { eq } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 import { getAdapter, isCountyKey, listCounties } from "@/adapters/registry";
 import type { CountyKey } from "@/adapters/types";
 import type { Db } from "@/db";
-import { agentActions, contactParcels, contacts, deals } from "@/db/schema";
+import { agentActions, campaigns, contactParcels, contacts, deals } from "@/db/schema";
 import { bestMatch } from "@/lib/eligibility/match-builders";
 import { fromCents } from "@/lib/eligibility/offer-math";
 import { verifyParcel } from "@/lib/eligibility/verify-parcel";
@@ -30,7 +30,16 @@ export async function attachParcelToDeal(
   const deal = await db.query.deals.findFirst({ where: eq(deals.id, dealId) });
   if (!deal) return { ok: false, reason: "deal not found" };
 
-  const result = await verifyParcel(db, county, parcelId.trim(), deal.campaignId ?? null);
+  // Deals arrive from the webhook with no campaign, and the campaign is what
+  // supplies the buy boxes — so without one, every lot verdicts "pending"
+  // forever no matter how many buyers exist. Adopt the live campaign when
+  // there's exactly one; anything ambiguous is left for a human to set.
+  const campaignId = deal.campaignId ?? (await soleLiveCampaign(db));
+  if (!deal.campaignId && campaignId) {
+    await db.update(deals).set({ campaignId, updatedAt: new Date() }).where(eq(deals.id, dealId));
+  }
+
+  const result = await verifyParcel(db, county, parcelId.trim(), campaignId);
   if (!result) return { ok: false, reason: `parcel not found in ${county} records` };
 
   // The numbers follow whichever buyer the lot actually matched — max offer is
@@ -213,4 +222,27 @@ async function resolveFromSendivoAddress(
   });
 
   return true;
+}
+
+
+/**
+ * The one campaign new deals should join, or null when it isn't obvious.
+ *
+ * A deal's campaign decides which buy boxes score its lot. Inbound deals are
+ * created by the webhook, which knows nothing about campaigns, so they land
+ * with none — and a deal with no campaign can never be priced, however many
+ * buyers exist. Almost always there is exactly one campaign running, so that
+ * one is adopted; with several, guessing would price a lot against the wrong
+ * market, so it stays unset and visible instead.
+ */
+export async function soleLiveCampaign(db: Db): Promise<string | null> {
+  const running = await db
+    .select({ id: campaigns.id })
+    .from(campaigns)
+    .where(inArray(campaigns.status, ["live", "ready"]));
+  if (running.length === 1) return running[0].id;
+
+  // No live campaign but exactly one exists at all — still unambiguous.
+  const all = await db.select({ id: campaigns.id }).from(campaigns);
+  return all.length === 1 ? all[0].id : null;
 }

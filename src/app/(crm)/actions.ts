@@ -367,3 +367,105 @@ export async function resolveEscalationAction(
   revalidatePath("/deal-room");
   return { ok: true as const };
 }
+
+/**
+ * Move a deal's stage by hand, and record the money when it closes.
+ *
+ * The lifecycle previously dead-ended: contracts pushed a deal to
+ * `under_contract` and nothing on any screen could move it further. `closed`
+ * was never set anywhere, `assignment_fee` and `closed_at` were never written,
+ * and the Closings page was therefore wired to data no code path could produce.
+ * A deal that funded in real life had nowhere to be recorded.
+ *
+ * The fee is required to close because it is the number the business is
+ * measured by — a closed deal with no fee would quietly report a month as
+ * earning nothing.
+ */
+const DEAL_STAGES = [
+  "lead",
+  "qualifying",
+  "verified",
+  "offer",
+  "negotiating",
+  "accepted",
+  "under_contract",
+  "closed",
+  "dead",
+] as const;
+
+export async function setDealStageAction(
+  dealId: string,
+  stage: string,
+  extra?: { assignmentFee?: string; closedAt?: string; deadReason?: string },
+) {
+  await requireSession();
+  if (!(DEAL_STAGES as readonly string[]).includes(stage)) {
+    return { ok: false as const, reason: "unknown stage" };
+  }
+
+  const db = getDb();
+  const deal = await db.query.deals.findFirst({ where: eq(deals.id, dealId) });
+  if (!deal) return { ok: false as const, reason: "deal not found" };
+
+  const patch: Record<string, unknown> = { stage, updatedAt: new Date() };
+
+  if (stage === "closed") {
+    const fee = Number(String(extra?.assignmentFee ?? "").replace(/[$,\s]/g, ""));
+    if (!Number.isFinite(fee) || fee <= 0) {
+      return { ok: false as const, reason: "what did you make on it? the assignment fee is required to close" };
+    }
+    patch.assignmentFee = fee.toFixed(2);
+    // Funding date defaults to today; a backdated close is normal when the
+    // wire lands before anyone updates the CRM.
+    const when = extra?.closedAt ? new Date(`${extra.closedAt}T12:00:00`) : new Date();
+    if (Number.isNaN(when.getTime())) return { ok: false as const, reason: "that closing date isn't valid" };
+    patch.closedAt = when;
+    if (!deal.closingDate) patch.closingDate = when;
+  }
+
+  if (stage === "dead") patch.deadReason = extra?.deadReason?.trim() || "closed by hand";
+
+  await db.update(deals).set(patch).where(eq(deals.id, dealId));
+  await db.insert(agentActions).values({
+    type: "deal_stage_set",
+    input: { dealId, from: deal.stage, to: stage },
+    output: { assignmentFee: patch.assignmentFee ?? null, closedAt: patch.closedAt ?? null },
+    approvedBy: "marlon",
+  });
+
+  revalidatePath("/deal-room");
+  revalidatePath("/pipeline");
+  revalidatePath("/closings");
+  return { ok: true as const };
+}
+
+/**
+ * Put a deal on a campaign by hand.
+ *
+ * The campaign supplies the buy boxes, so a deal without one can never be
+ * priced. New deals adopt the single running campaign automatically; this is
+ * for the case where several are running and the right one has to be chosen.
+ */
+export async function setDealCampaignAction(dealId: string, campaignId: string | null) {
+  await requireSession();
+  const db = getDb();
+
+  await db
+    .update(deals)
+    .set({ campaignId: campaignId || null, updatedAt: new Date() })
+    .where(eq(deals.id, dealId));
+
+  // The verdict was computed against the old campaign's buyers, so re-run
+  // eligibility rather than leaving a stale pass/fail on screen.
+  const deal = await db.query.deals.findFirst({ where: eq(deals.id, dealId) });
+  if (deal?.parcelId) {
+    const parcel = await db.query.parcels.findFirst({ where: eq(parcels.id, deal.parcelId) });
+    if (parcel && isCountyKey(parcel.county)) {
+      await attachParcelToDeal(db, dealId, parcel.county, parcel.parcelId);
+    }
+  }
+
+  revalidatePath("/deal-room");
+  revalidatePath("/pipeline");
+  return { ok: true as const };
+}

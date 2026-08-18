@@ -6,6 +6,7 @@ import { ParcelMap } from "@/components/parcel-map";
 import { ParcelManager, type OwnedParcel } from "@/components/parcel-manager";
 import { LabelPicker } from "@/components/label-picker";
 import { ClerkLink } from "@/components/clerk-link";
+import { DealStage } from "@/components/deal-stage";
 import { anchorOffer, fromCents, maxOffer, roomLeft, toCents, type OfferCriteria } from "@/lib/eligibility/offer-math";
 import { femaMscUrl } from "@/lib/eligibility/fema";
 import { nwiMapperUrl } from "@/lib/eligibility/nwi";
@@ -39,6 +40,7 @@ export function ContextCard({
   criteria,
   contracts = [],
   ownedParcels = [],
+  campaigns = [],
 }: {
   deal: Deal;
   parcel: Parcel | null;
@@ -48,6 +50,7 @@ export function ContextCard({
   contracts?: Contract[];
   /** Every lot this seller is on record for, not just the one under negotiation. */
   ownedParcels?: OwnedParcel[];
+  campaigns?: { id: string; name: string }[];
 }) {
   if (!parcel) {
     return (
@@ -180,6 +183,14 @@ export function ContextCard({
       </div>
 
       <ClerkLink county={parcel.county} ownerName={parcel.ownerNameRaw} parcelId={parcel.parcelId} />
+
+      <DealStage
+        dealId={deal.id}
+        stage={deal.stage}
+        assignmentFee={deal.assignmentFee}
+        campaignId={deal.campaignId}
+        campaigns={campaigns}
+      />
 
       {contact && <LabelPicker contactId={contact.id} current={contact.labels ?? []} />}
 
